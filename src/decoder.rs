@@ -15,7 +15,7 @@ const INTERMEDIATE: usize = 3072;
 pub const VOCAB_SIZE: usize = 151936;
 const ROPE_THETA: f64 = 1_000_000.0;
 const RMS_EPS: f64 = 1e-6;
-const MAX_SEQ_LEN: usize = 4096;
+const MAX_SEQ_LEN: usize = 65536; // from model config max_position_embeddings
 
 // ── RoPE ────────────────────────────────────────────────────────────────────
 
