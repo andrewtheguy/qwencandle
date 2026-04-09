@@ -149,7 +149,7 @@ fn log_mel_spectrogram_worker(
         for j in 0..copy_len {
             fft_in[j] = hann[j] * samples[offset + j];
         }
-        for v in fft_in.iter_mut().take(N_FFT).skip(copy_len) {
+        for v in fft_in.iter_mut().skip(copy_len) {
             *v = 0.0;
         }
 
