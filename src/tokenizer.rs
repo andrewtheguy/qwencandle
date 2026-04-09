@@ -22,8 +22,8 @@ impl Tokenizer {
             let vocab_path = model_dir.join("vocab.json");
             let merges_path = model_dir.join("merges.txt");
             let bpe = BPE::from_file(
-                vocab_path.to_str().unwrap(),
-                merges_path.to_str().unwrap(),
+                vocab_path.to_str().context("non-UTF-8 vocab path")?,
+                merges_path.to_str().context("non-UTF-8 merges path")?,
             )
             .build()
             .map_err(|e| anyhow::anyhow!("{}", e))?;
