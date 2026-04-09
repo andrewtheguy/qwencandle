@@ -2,6 +2,12 @@
 
 Qwen3-ASR-0.6B speech-to-text inference in Rust, built on [Candle](https://github.com/huggingface/candle).
 
+## Motivation
+
+The main existing Python implementations of Qwen ASR (via PyTorch / Transformers) suffer from memory leaks when running inference repeatedly on Apple Silicon with Metal/MPS. Memory grows with each transcription call and is never fully reclaimed, eventually forcing a restart. This makes them unsuitable for long-running services or batch processing workflows on macOS.
+
+This project reimplements Qwen3-ASR inference in Rust using HuggingFace's [Candle](https://github.com/huggingface/candle) framework, which provides correct Metal GPU support without the memory leak issues. The result is a lightweight, memory-stable binary (and Python library) that can transcribe audio indefinitely on Metal without degradation.
+
 ## Build
 
 ```
