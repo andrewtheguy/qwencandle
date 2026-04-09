@@ -6,7 +6,7 @@ use std::sync::Mutex;
 fn parse_device(device: &str) -> PyResult<Device> {
     match device.to_lowercase().as_str() {
         "cpu" => Ok(Device::Cpu),
-        "metal" | "mps" | "gpu" => Ok(Device::DiscreteGpu(0)),
+        "metal" | "mps" | "gpu" => Ok(Device::DefaultDevice),
         _ => Err(PyRuntimeError::new_err(format!(
             "Unknown device: {}. Supported: cpu, metal/gpu",
             device

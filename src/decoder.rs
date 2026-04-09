@@ -100,8 +100,8 @@ impl RotaryEmbedding {
         let x1 = x.narrow(4, 1, 1);         // [B, H, L, half, 1]
 
         // cos/sin are [1, 1, L, half], expand to [1, 1, L, half, 1]
-        let cos = cos.clone().unsqueeze::<5>();
-        let sin = sin.clone().unsqueeze::<5>();
+        let cos = cos.clone().reshape([1, 1, l, half, 1]);
+        let sin = sin.clone().reshape([1, 1, l, half, 1]);
 
         // out[..., 0] = x0 * cos - x1 * sin
         // out[..., 1] = x1 * cos + x0 * sin
@@ -365,7 +365,7 @@ impl Decoder {
     /// Embed a single token ID.
     pub fn embed_token(&self, token_id: u32) -> Tensor<B, 2> {
         let ids = Tensor::<B, 2, Int>::from_data(
-            TensorData::new(vec![token_id as i64], [1, 1]),
+            TensorData::new(vec![token_id as i32], [1, 1]),
             &self.device,
         );
         let out = self.embed_tokens.forward(ids); // [1, 1, hidden]
@@ -375,10 +375,10 @@ impl Decoder {
 
     /// Embed multiple token IDs. Returns [seq, hidden].
     pub fn embed_tokens_ids(&self, token_ids: &[u32]) -> Tensor<B, 2> {
-        let ids_i64: Vec<i64> = token_ids.iter().map(|&t| t as i64).collect();
+        let ids_i32: Vec<i32> = token_ids.iter().map(|&t| t as i32).collect();
         let seq = token_ids.len();
         let ids = Tensor::<B, 2, Int>::from_data(
-            TensorData::new(ids_i64, [1, seq]),
+            TensorData::new(ids_i32, [1, seq]),
             &self.device,
         );
         let out = self.embed_tokens.forward(ids); // [1, seq, hidden]

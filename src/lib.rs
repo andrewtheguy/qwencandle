@@ -163,7 +163,7 @@ impl QwenAsr {
         indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         eprintln!("  Top-5 logits: {:?}", &indexed[..5]);
         let tok_tensor: Tensor<B, 2, Int> = logits.argmax(1);
-        let tok_data: Vec<i64> = tok_tensor.into_data().to_vec().unwrap();
+        let tok_data: Vec<i32> = tok_tensor.into_data().to_vec().unwrap();
         let mut token = tok_data[0] as u32;
         let mut generated = vec![token];
         eprintln!("  First token: {}", token);

@@ -26,7 +26,7 @@ fn print_usage() {
 fn parse_device(s: &str) -> Result<Device> {
     match s.to_lowercase().as_str() {
         "cpu" => Ok(Device::Cpu),
-        "metal" | "mps" | "gpu" => Ok(Device::DiscreteGpu(0)),
+        "metal" | "mps" | "gpu" => Ok(Device::DefaultDevice),
         _ => bail!("Unknown device: {}. Supported: cpu, metal/gpu", s),
     }
 }
