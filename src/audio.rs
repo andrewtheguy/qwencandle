@@ -181,13 +181,9 @@ pub fn compute_mel_spectrogram(samples: &[f32]) -> Vec<f32> {
     let n_len = samples.len() / HOP_LENGTH;
     // No padding — just compute exact frames
 
-    let n_threads = std::cmp::min(
-        std::cmp::max(std::thread::available_parallelism().map_or(2, |n| n.get()), 2),
-        12,
-    );
-    // Make even
-    let n_threads = n_threads - n_threads % 2;
-    let n_threads = std::cmp::max(n_threads, 2);
+    // Each thread computes a strided subset of STFT frames (thread i handles frames i, i+n, i+2n, ...).
+    // Results are summed across threads since each thread writes to non-overlapping frame indices.
+    let n_threads = std::thread::available_parallelism().map_or(2, |n| n.get());
 
     let hann: Vec<f32> = (0..N_FFT)
         .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / N_FFT as f32).cos()))
