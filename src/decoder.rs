@@ -13,13 +13,7 @@ const INTERMEDIATE: usize = 3072;
 pub const VOCAB_SIZE: usize = 151936;
 const ROPE_THETA: f64 = 1_000_000.0;
 const RMS_EPS: f64 = 1e-6;
-// Model config max_position_embeddings (official ASR limit: 1200s / 20min).
-const MAX_SEQ_LEN: usize = 65536;
-// Candle's Metal SDPA full-kernel path is selected only when q_seq > 8 in
-// candle-nn 0.10.2 `ops.rs`. We only enable causal prefill SDPA once we are
-// firmly on that full-kernel path and avoid relying on the short-sequence
-// vector kernel for masked prefill.
-const METAL_SDPA_MIN_FULL_KERNEL_LEN: usize = 9;
+const MAX_SEQ_LEN: usize = 65536; // model config max_position_embeddings (official ASR limit: 1200s / 20min)
 
 // ── RoPE ────────────────────────────────────────────────────────────────────
 
@@ -89,7 +83,6 @@ impl Attention {
         mask: Option<&Tensor>,
         rotary: &RotaryEmbedding,
         offset: usize,
-        use_causal_sdpa: bool,
     ) -> Result<Tensor> {
         let (b, l, _) = x.dims3()?;
 
@@ -115,24 +108,6 @@ impl Attention {
 
         // KV cache
         let (k, v) = self.kv_cache.append(&k, &v)?;
-
-        if x.device().is_metal() && (use_causal_sdpa || (mask.is_none() && l == 1)) {
-            let scale = 1.0 / (HEAD_DIM as f64).sqrt();
-            let ctx = candle_nn::ops::sdpa(
-                &q.contiguous()?,
-                &k.contiguous()?,
-                &v.contiguous()?,
-                None,
-                use_causal_sdpa,
-                scale as f32,
-                1.0,
-            )?;
-
-            return ctx
-                .transpose(1, 2)?
-                .reshape((b, l, N_HEADS * HEAD_DIM))?
-                .apply(&self.o_proj);
-        }
 
         // GQA: repeat KV heads
         let n_groups = N_HEADS / N_KV_HEADS;
@@ -228,12 +203,9 @@ impl DecoderLayer {
         mask: Option<&Tensor>,
         rotary: &RotaryEmbedding,
         offset: usize,
-        use_causal_sdpa: bool,
     ) -> Result<Tensor> {
         let h = self.input_layernorm.forward(x)?;
-        let h = self
-            .self_attn
-            .forward(&h, mask, rotary, offset, use_causal_sdpa)?;
+        let h = self.self_attn.forward(&h, mask, rotary, offset)?;
         let x = (x + h)?;
         let h = self.post_attention_layernorm.forward(&x)?;
         let h = h.apply(&self.mlp)?;
@@ -313,12 +285,7 @@ impl Decoder {
     /// Forward pass on embeddings. Returns hidden states [B, L, hidden].
     fn forward_hidden(&mut self, h: &Tensor, offset: usize) -> Result<Tensor> {
         let (_, l, _) = h.dims3()?;
-        // Metal SDPA has no CPU implementation, so all non-Metal runs keep the
-        // existing masked attention path. On Metal we only skip `causal_mask`
-        // when the prefill is long enough to hit Candle's full SDPA kernel.
-        let use_causal_sdpa =
-            self.device.is_metal() && offset == 0 && l >= METAL_SDPA_MIN_FULL_KERNEL_LEN;
-        let mask = if l == 1 || use_causal_sdpa {
+        let mask = if l == 1 {
             None
         } else {
             Some(self.causal_mask(l, offset)?)
@@ -326,7 +293,7 @@ impl Decoder {
 
         let mut h = h.clone();
         for layer in &mut self.layers {
-            h = layer.forward(&h, mask.as_ref(), &self.rotary, offset, use_causal_sdpa)?;
+            h = layer.forward(&h, mask.as_ref(), &self.rotary, offset)?;
         }
         self.norm.forward(&h)
     }
