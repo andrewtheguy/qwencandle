@@ -3,6 +3,9 @@ mod decoder;
 mod encoder;
 pub mod tokenizer;
 
+#[cfg(feature = "python")]
+mod python;
+
 use anyhow::{bail, Context, Result};
 use candle_core::{DType, Tensor};
 use candle_nn::VarBuilder;

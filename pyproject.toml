@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "qwencandle"
+version = "0.0.1a1"
+description = "Qwen3-ASR-0.6B speech-to-text inference via Candle"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.26"]
+
+[tool.maturin]
+features = ["python"]
+bindings = "pyo3"
