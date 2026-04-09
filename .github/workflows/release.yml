@@ -47,6 +47,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Validate release version
+        id: validate
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -55,13 +56,17 @@ jobs:
           import os
           import pathlib
           import re
-          import sys
 
           root = pathlib.Path(".")
           cargo = (root / "Cargo.toml").read_text()
           pyproject = (root / "pyproject.toml").read_text()
           release_tag = os.environ["RELEASE_TAG"]
-          normalized_tag = release_tag[1:] if release_tag.startswith("v") else release_tag
+
+          # Ensure v prefix
+          if not release_tag.startswith("v"):
+              release_tag = f"v{release_tag}"
+
+          version = release_tag[1:]
 
           cargo_match = re.search(r'^version = "([^"]+)"$', cargo, re.MULTILINE)
           pyproject_match = re.search(r'^version = "([^"]+)"$', pyproject, re.MULTILINE)
@@ -87,11 +92,14 @@ jobs:
               f"Version mismatch: Cargo.toml={cargo_version} (normalized: {cargo_normalized}), pyproject.toml={pyproject_version}"
             )
 
-          # Tag uses PEP 440 format (e.g. v0.0.1a1)
-          if pyproject_version != normalized_tag:
+          if pyproject_version != version:
             raise SystemExit(
               f"Release tag {release_tag} does not match pyproject.toml version {pyproject_version}"
             )
+
+          # Output the normalized tag for downstream steps
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"tag={release_tag}\n")
           PY
 
       - name: Install release build dependencies
@@ -124,8 +132,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
         run: |
+          RELEASE_TAG="${RELEASE_TAG_INPUT}"
+          [[ "$RELEASE_TAG" != v* ]] && RELEASE_TAG="v${RELEASE_TAG}"
+
           mapfile -d '' assets < <(find release-assets -type f -name '*.whl' -print0 | sort -z)
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "No wheel assets found under release-assets" >&2
