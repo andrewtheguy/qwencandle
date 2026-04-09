@@ -34,6 +34,16 @@ The model is automatically downloaded from HuggingFace on first use and cached i
 --help             Show help
 ```
 
+### Thread count
+
+Set `RAYON_NUM_THREADS` to control CPU parallelism (used by Candle for tensor ops):
+
+```
+RAYON_NUM_THREADS=4 ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/release/qwencandle
+```
+
+Defaults to all available cores if unset.
+
 ### Metal GPU
 
 On macOS, build with `--features metal` and use `--device metal` for GPU acceleration:

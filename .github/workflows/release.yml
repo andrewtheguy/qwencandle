@@ -63,8 +63,10 @@ jobs:
           release_tag = os.environ["RELEASE_TAG"]
           normalized_tag = release_tag[1:] if release_tag.startswith("v") else release_tag
 
-          cargo_match = re.search(r'^version = "([^"]+)"$', cargo, re.MULTILINE)
-          pyproject_match = re.search(r'^version = "([^"]+)"$', pyproject, re.MULTILINE)
+          # Match PEP 440 style versions: 0.1.0, 0.0.1a1, 1.2.3b2, 1.0.0rc1
+          ver_re = r'^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+(?:(?:a|b|rc)[0-9]+)?)"$'
+          cargo_match = re.search(ver_re, cargo, re.MULTILINE)
+          pyproject_match = re.search(ver_re, pyproject, re.MULTILINE)
 
           if cargo_match is None or pyproject_match is None:
             raise SystemExit("Could not determine package versions from Cargo.toml / pyproject.toml")
