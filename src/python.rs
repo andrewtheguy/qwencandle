@@ -1,0 +1,86 @@
+use crate::{QwenAsr as RustQwenAsr, DEFAULT_MODEL_ID, SUPPORTED_LANGUAGES};
+use candle_core::Device;
+use numpy::PyReadonlyArray1;
+use pyo3::{exceptions::PyRuntimeError, prelude::*};
+use std::sync::Mutex;
+
+fn parse_device(device: &str) -> PyResult<Device> {
+    match device.to_lowercase().as_str() {
+        "cpu" => Ok(Device::Cpu),
+        "metal" | "mps" => {
+            #[cfg(feature = "metal")]
+            {
+                Device::new_metal(0).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+            }
+            #[cfg(not(feature = "metal"))]
+            {
+                Err(PyRuntimeError::new_err(
+                    "Metal support not compiled. Rebuild with: maturin develop --features python,metal",
+                ))
+            }
+        }
+        "cuda" => {
+            #[cfg(feature = "cuda")]
+            {
+                Device::new_cuda(0).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                Err(PyRuntimeError::new_err(
+                    "CUDA support not compiled. Rebuild with: maturin develop --features python,cuda",
+                ))
+            }
+        }
+        _ => Err(PyRuntimeError::new_err(format!(
+            "Unknown device: {}. Supported: cpu, metal, cuda",
+            device
+        ))),
+    }
+}
+
+#[pyclass]
+struct QwenAsr {
+    inner: Mutex<RustQwenAsr>,
+}
+
+#[pymethods]
+impl QwenAsr {
+    #[new]
+    #[pyo3(signature = (model_id=None, device="cpu"))]
+    fn new(model_id: Option<&str>, device: &str) -> PyResult<Self> {
+        let model_id = model_id.unwrap_or(DEFAULT_MODEL_ID);
+        let device = parse_device(device)?;
+        let inner = RustQwenAsr::load_on(model_id, &device)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(Self {
+            inner: Mutex::new(inner),
+        })
+    }
+
+    #[pyo3(signature = (samples, *, language=None, context=None))]
+    fn transcribe(
+        &self,
+        samples: PyReadonlyArray1<'_, f32>,
+        language: Option<&str>,
+        context: Option<&str>,
+    ) -> PyResult<String> {
+        let samples = samples.as_slice()?;
+        self.inner
+            .lock()
+            .unwrap()
+            .transcribe(samples, language, context)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+}
+
+#[pymodule]
+#[pyo3(name = "qwencandle")]
+fn qwencandle(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<QwenAsr>()?;
+    module.add("DEFAULT_MODEL_ID", DEFAULT_MODEL_ID)?;
+    module.add(
+        "SUPPORTED_LANGUAGES",
+        SUPPORTED_LANGUAGES.to_vec(),
+    )?;
+    Ok(())
+}

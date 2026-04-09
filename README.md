@@ -34,6 +34,16 @@ The model is automatically downloaded from HuggingFace on first use and cached i
 --help             Show help
 ```
 
+### Thread count
+
+Set `RAYON_NUM_THREADS` to control CPU parallelism (used by Candle for tensor ops):
+
+```
+RAYON_NUM_THREADS=4 ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/release/qwencandle
+```
+
+Defaults to all available cores if unset.
+
 ### Metal GPU
 
 On macOS, build with `--features metal` and use `--device metal` for GPU acceleration:
@@ -69,13 +79,52 @@ huggingface-cli download Qwen/Qwen3-ASR-0.6B --local-dir qwen3-asr-0.6b
 ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/release/qwencandle --model ./qwen3-asr-0.6b
 ```
 
-## Library
-
-Use as a Rust library:
+## Rust library
 
 ```rust
 use qwencandle::{QwenAsr, Device};
 
 let mut model = QwenAsr::load_on("Qwen/Qwen3-ASR-0.6B", &Device::Cpu)?;
 let text = model.transcribe(&samples, Some("English"), None)?;
+```
+
+## Python bindings
+
+### Install
+
+```
+uv venv
+uv pip install numpy maturin
+maturin develop --release
+```
+
+With Metal GPU support:
+
+```
+maturin develop --release --features metal
+```
+
+### Usage
+
+```python
+import numpy as np
+import qwencandle
+
+model = qwencandle.QwenAsr()  # auto-downloads from HuggingFace
+text = model.transcribe(samples)  # samples: numpy float32 array, 16kHz mono
+
+# with options
+model = qwencandle.QwenAsr(device="metal")
+text = model.transcribe(samples, language="English", context="Previous sentence.")
+```
+
+### API
+
+```python
+qwencandle.DEFAULT_MODEL_ID   # "Qwen/Qwen3-ASR-0.6B"
+qwencandle.SUPPORTED_LANGUAGES  # list of 30 language names
+
+class QwenAsr:
+    def __init__(self, model_id=None, device="cpu"): ...
+    def transcribe(self, samples, *, language=None, context=None) -> str: ...
 ```
