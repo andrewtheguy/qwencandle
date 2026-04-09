@@ -90,7 +90,21 @@ let text = model.transcribe(&samples, Some("English"), None)?;
 
 ## Python bindings
 
-### Install
+### Install from GitHub Pages
+
+change `VERSION` to the version you want to install (e.g. `0.0.1a1`):
+
+```
+pip install --extra-index-url https://andrewtheguy.github.io/qwencandle/simple/ qwencandle==VERSION
+```
+
+Or with uv:
+
+```
+uv pip install --extra-index-url https://andrewtheguy.github.io/qwencandle/simple/ qwencandle==VERSION
+```
+
+### Install from source
 
 ```
 uv venv
