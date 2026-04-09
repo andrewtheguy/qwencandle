@@ -2,7 +2,7 @@
 /// GQA with Q/K RMSNorm, NeoX RoPE, KV cache, SwiGLU Mlp, tied embeddings.
 use candle_core::{DType, Device, Module, Result, Tensor};
 use candle_nn::{
-    kv_cache::ConcatKvCache, linear_no_bias, Embedding, Linear, RmsNorm, VarBuilder,
+    kv_cache::KvCache, linear_no_bias, Embedding, Linear, RmsNorm, VarBuilder,
 };
 
 // 0.6B decoder config
@@ -63,7 +63,7 @@ struct Attention {
     o_proj: Linear,
     q_norm: RmsNorm,
     k_norm: RmsNorm,
-    kv_cache: ConcatKvCache,
+    kv_cache: KvCache,
 }
 
 impl Attention {
@@ -75,7 +75,7 @@ impl Attention {
             o_proj: linear_no_bias(N_HEADS * HEAD_DIM, HIDDEN_SIZE, vb.pp("o_proj"))?,
             q_norm: candle_nn::rms_norm(HEAD_DIM, RMS_EPS, vb.pp("q_norm"))?,
             k_norm: candle_nn::rms_norm(HEAD_DIM, RMS_EPS, vb.pp("k_norm"))?,
-            kv_cache: ConcatKvCache::new(2), // dim=2 for [B,H,S,D]
+            kv_cache: KvCache::new(2, 8192), // dim=2 for [B,H,S,D], pre-allocate 8192 positions
         })
     }
 
