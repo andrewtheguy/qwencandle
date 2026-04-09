@@ -1,7 +1,9 @@
 /// Qwen3 LLM Decoder for ASR.
 /// GQA with Q/K RMSNorm, NeoX RoPE, KV cache, SwiGLU Mlp, tied embeddings.
 use candle_core::{DType, Device, Module, Result, Tensor};
-use candle_nn::{kv_cache::ConcatKvCache, linear_no_bias, Embedding, Linear, RmsNorm, VarBuilder};
+use candle_nn::{
+    kv_cache::ConcatKvCache, linear_no_bias, Embedding, Linear, RmsNorm, VarBuilder,
+};
 
 // 0.6B decoder config
 const HIDDEN_SIZE: usize = 1024;
@@ -91,9 +93,15 @@ impl Attention {
         let v = self.v_proj.forward(x)?;
 
         // Reshape: [B, L, H, D] → [B, H, L, D]
-        let q = q.reshape((b, l, N_HEADS, HEAD_DIM))?.transpose(1, 2)?;
-        let k = k.reshape((b, l, N_KV_HEADS, HEAD_DIM))?.transpose(1, 2)?;
-        let v = v.reshape((b, l, N_KV_HEADS, HEAD_DIM))?.transpose(1, 2)?;
+        let q = q
+            .reshape((b, l, N_HEADS, HEAD_DIM))?
+            .transpose(1, 2)?;
+        let k = k
+            .reshape((b, l, N_KV_HEADS, HEAD_DIM))?
+            .transpose(1, 2)?;
+        let v = v
+            .reshape((b, l, N_KV_HEADS, HEAD_DIM))?
+            .transpose(1, 2)?;
 
         // Per-head RMSNorm on Q and K
         let q_flat = q.flatten(0, 2)?; // [B*H*L, D]
@@ -232,8 +240,7 @@ pub struct Decoder {
 impl Decoder {
     pub fn load(vb: VarBuilder, device: &Device) -> Result<Self> {
         let vb_model = vb.pp("model");
-        let embed_tokens =
-            candle_nn::embedding(VOCAB_SIZE, HIDDEN_SIZE, vb_model.pp("embed_tokens"))?;
+        let embed_tokens = candle_nn::embedding(VOCAB_SIZE, HIDDEN_SIZE, vb_model.pp("embed_tokens"))?;
 
         let mut layers = Vec::with_capacity(N_LAYERS);
         let vb_l = vb_model.pp("layers");
@@ -272,14 +279,20 @@ impl Decoder {
     }
 
     fn causal_mask(&self, tgt: usize, offset: usize) -> Result<Tensor> {
-        let width = tgt + offset;
-        let allowed = Tensor::tril2(width, DType::U8, &self.device)?.narrow(0, offset, tgt)?;
-        let zeros = Tensor::zeros((tgt, width), self.dtype, &self.device)?;
-        let neg_inf =
-            Tensor::full(f32::NEG_INFINITY, (tgt, width), &self.device)?.to_dtype(self.dtype)?;
-        allowed
-            .where_cond(&zeros, &neg_inf)?
-            .reshape((1, 1, tgt, width))
+        let minf = f32::NEG_INFINITY;
+        let mask: Vec<f32> = (0..tgt)
+            .flat_map(|i| {
+                (0..(tgt + offset)).map(move |j| {
+                    if j <= i + offset {
+                        0.0
+                    } else {
+                        minf
+                    }
+                })
+            })
+            .collect();
+        Tensor::from_slice(&mask, (1, 1, tgt, tgt + offset), &self.device)?
+            .to_dtype(self.dtype)
     }
 
     /// Forward pass on embeddings. Returns hidden states [B, L, hidden].
@@ -306,7 +319,8 @@ impl Decoder {
         // Take last position
         let seq_len = h.dim(1)?;
         let last = h.narrow(1, seq_len - 1, 1)?.squeeze(1)?; // [1, hidden]
-        last.to_dtype(DType::F32)?.matmul(&self.lm_head_weight.t()?)
+        last.to_dtype(DType::F32)?
+            .matmul(&self.lm_head_weight.t()?)
     }
 
     /// Forward pass for a single token during autoregressive generation.
@@ -316,7 +330,8 @@ impl Decoder {
         let embed_3d = embed.unsqueeze(0)?; // [1, 1, hidden]
         let h = self.forward_hidden(&embed_3d, offset)?;
         let h = h.squeeze(1)?; // [1, hidden]
-        h.to_dtype(DType::F32)?.matmul(&self.lm_head_weight.t()?)
+        h.to_dtype(DType::F32)?
+            .matmul(&self.lm_head_weight.t()?)
     }
 
     pub fn clear_kv_cache(&mut self) {
