@@ -23,6 +23,7 @@ The model is automatically downloaded from HuggingFace on first use and cached i
 ```
 --model <id>       HuggingFace model ID or local path (default: Qwen/Qwen3-ASR-0.6B)
 --language <lang>  Force output language (e.g. English, Chinese, Japanese)
+--context <text>   Condition on previous text (inserted as system prompt)
 --help             Show help
 ```
 
@@ -35,6 +36,14 @@ ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/releas
 ```
 
 Supported languages: Chinese, English, Cantonese, Arabic, German, French, Spanish, Portuguese, Indonesian, Italian, Korean, Russian, Thai, Vietnamese, Japanese, Turkish, Hindi, Malay, Dutch, Swedish, Danish, Finnish, Polish, Czech, Filipino, Persian, Greek, Romanian, Hungarian, Macedonian.
+
+### Context conditioning
+
+Pass previous transcript text to improve consistency across segments:
+
+```
+ffmpeg -i segment2.wav -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/release/qwencandle --context "Previously the speaker discussed climate change."
+```
 
 ### Local model
 

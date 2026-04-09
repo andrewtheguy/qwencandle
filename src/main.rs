@@ -21,11 +21,7 @@ const TOKEN_AUDIO_PAD: u32 = 151676;
 const TOKEN_ENDOFTEXT: u32 = 151643;
 const TOKEN_ASR_TEXT: u32 = 151704;
 
-// Prompt template
-const PROMPT_PREFIX: &[u32] = &[
-    TOKEN_IM_START, 8948, 198, TOKEN_IM_END, 198,
-    TOKEN_IM_START, 872, 198, TOKEN_AUDIO_START,
-];
+// Prompt suffix (after audio)
 const PROMPT_SUFFIX: &[u32] = &[
     TOKEN_AUDIO_END, TOKEN_IM_END, 198,
     TOKEN_IM_START, 77091, 198,
@@ -46,6 +42,7 @@ fn print_usage() {
     eprintln!("Options:");
     eprintln!("  --model <id>       HuggingFace model ID or local path (default: {})", DEFAULT_MODEL_ID);
     eprintln!("  --language <lang>  Force output language (e.g. English, Chinese, Japanese)");
+    eprintln!("  --context <text>   Condition on previous text (system prompt for consistency)");
     eprintln!();
     eprintln!("Supported languages:");
     eprintln!("  {}", SUPPORTED_LANGUAGES.join(", "));
@@ -55,6 +52,7 @@ fn print_usage() {
     eprintln!("Examples:");
     eprintln!("  ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle");
     eprintln!("  ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle -l Japanese");
+    eprintln!("  ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle --context \"Previously the speaker said hello.\"");
     eprintln!("  ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle --model ./my-local-model");
 }
 
@@ -62,6 +60,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let mut model_id: Option<String> = None;
     let mut language: Option<String> = None;
+    let mut context: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -79,6 +78,13 @@ fn main() -> Result<()> {
                     bail!("--model requires a value");
                 }
                 model_id = Some(args[i].clone());
+            }
+            "--context" | "-c" => {
+                i += 1;
+                if i >= args.len() {
+                    bail!("--context requires a value");
+                }
+                context = Some(args[i].clone());
             }
             "--help" | "-h" => {
                 print_usage();
@@ -131,6 +137,16 @@ fn main() -> Result<()> {
     let mut dec = decoder::Decoder::load(vb.pp("thinker"), &device)?;
 
     // ── Build prompt ──
+    // Prompt: <|im_start|>system\n{context}<|im_end|>\n<|im_start|>user\n<|audio_start|>...audio...<|audio_end|><|im_end|>\n<|im_start|>assistant\n{lang_tokens}
+    let context_tokens = match &context {
+        Some(ctx) => {
+            let toks = tok.encode(ctx)?;
+            eprintln!("Context: {} chars, {} tokens", ctx.len(), toks.len());
+            toks
+        }
+        None => Vec::new(),
+    };
+
     let lang_tokens = match &language {
         Some(lang) => {
             if !SUPPORTED_LANGUAGES.iter().any(|&l| l.eq_ignore_ascii_case(lang)) {
@@ -148,8 +164,20 @@ fn main() -> Result<()> {
         None => Vec::new(),
     };
 
+    // Build input_ids with optional context in system prompt:
+    // <|im_start|>system\n [context_tokens] <|im_end|>\n<|im_start|>user\n<|audio_start|> [audio_pads] <|audio_end|><|im_end|>\n<|im_start|>assistant\n [lang_tokens]
     let mut input_ids: Vec<u32> = Vec::new();
-    input_ids.extend_from_slice(PROMPT_PREFIX);
+    input_ids.push(TOKEN_IM_START);
+    input_ids.push(8948); // "system"
+    input_ids.push(198);  // "\n"
+    input_ids.extend_from_slice(&context_tokens);
+    input_ids.push(TOKEN_IM_END);
+    input_ids.push(198);  // "\n"
+    input_ids.push(TOKEN_IM_START);
+    input_ids.push(872);  // "user"
+    input_ids.push(198);  // "\n"
+    input_ids.push(TOKEN_AUDIO_START);
+    let prefix_len = input_ids.len();
     input_ids.extend(std::iter::repeat_n(TOKEN_AUDIO_PAD, n_audio));
     input_ids.extend_from_slice(PROMPT_SUFFIX);
     input_ids.extend_from_slice(&lang_tokens);
@@ -159,7 +187,6 @@ fn main() -> Result<()> {
     // ── Embed tokens and replace audio positions ──
     let mut input_embeds = dec.embed_tokens(&input_ids)?;
 
-    let prefix_len = PROMPT_PREFIX.len();
     let before = input_embeds.narrow(0, 0, prefix_len)?;
     let after = input_embeds.narrow(0, prefix_len + n_audio, prompt_len - prefix_len - n_audio)?;
     input_embeds = Tensor::cat(&[&before, &audio_embeds, &after], 0)?;
