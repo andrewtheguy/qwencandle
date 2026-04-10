@@ -1,0 +1,5 @@
+- no backward compatibility
+- test after rust code changes:
+  - `cat fixtures/jfk.wav | cargo run --release --features metal -- --device cpu` (CPU)
+  - `cat fixtures/jfk.wav | cargo run --release --features metal -- --device metal` (if on macOS with Metal support)
+  - run cargo clippy to check for clippy warnings

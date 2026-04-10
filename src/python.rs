@@ -1,41 +1,18 @@
 use crate::{QwenAsr as RustQwenAsr, DEFAULT_MODEL_ID, SUPPORTED_LANGUAGES};
-use candle_core::Device;
 use numpy::PyReadonlyArray1;
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use std::sync::Mutex;
 
-fn parse_device(device: &str) -> PyResult<Device> {
-    match device.to_lowercase().as_str() {
-        "cpu" => Ok(Device::Cpu),
-        "metal" | "mps" => {
-            #[cfg(feature = "metal")]
-            {
-                Device::new_metal(0).map_err(|e| PyRuntimeError::new_err(e.to_string()))
-            }
-            #[cfg(not(feature = "metal"))]
-            {
-                Err(PyRuntimeError::new_err(
-                    "Metal support not compiled. Rebuild with: maturin develop --features python,metal",
-                ))
-            }
-        }
-        "cuda" => {
-            #[cfg(feature = "cuda")]
-            {
-                Device::new_cuda(0).map_err(|e| PyRuntimeError::new_err(e.to_string()))
-            }
-            #[cfg(not(feature = "cuda"))]
-            {
-                Err(PyRuntimeError::new_err(
-                    "CUDA support not compiled. Rebuild with: maturin develop --features python,cuda",
-                ))
-            }
-        }
-        _ => Err(PyRuntimeError::new_err(format!(
-            "Unknown device: {}. Supported: cpu, metal, cuda",
-            device
-        ))),
-    }
+#[pyfunction]
+#[pyo3(name = "is_cuda_available")]
+fn is_cuda_available_py() -> bool {
+    crate::is_cuda_available()
+}
+
+#[pyfunction]
+#[pyo3(name = "is_metal_available")]
+fn is_metal_available_py() -> bool {
+    crate::is_metal_available()
 }
 
 #[pyclass]
@@ -46,10 +23,11 @@ struct QwenAsr {
 #[pymethods]
 impl QwenAsr {
     #[new]
-    #[pyo3(signature = (model_id=None, device="cpu"))]
-    fn new(model_id: Option<&str>, device: &str) -> PyResult<Self> {
+    #[pyo3(signature = (device, model_id=None))]
+    fn new(device: &str, model_id: Option<&str>) -> PyResult<Self> {
         let model_id = model_id.unwrap_or(DEFAULT_MODEL_ID);
-        let device = parse_device(device)?;
+        let device = crate::parse_device(device)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         let inner = RustQwenAsr::load_on(model_id, &device)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(Self {
@@ -93,5 +71,7 @@ fn qwencandle(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "SUPPORTED_LANGUAGES",
         SUPPORTED_LANGUAGES.to_vec(),
     )?;
+    module.add_function(wrap_pyfunction!(is_cuda_available_py, module)?)?;
+    module.add_function(wrap_pyfunction!(is_metal_available_py, module)?)?;
     Ok(())
 }
