@@ -2472,7 +2472,7 @@ dependencies = [
 
 [[package]]
 name = "qwencandle"
-version = "0.0.5-b1"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "candle-core",
