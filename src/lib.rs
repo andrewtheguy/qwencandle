@@ -14,6 +14,49 @@ use std::path::PathBuf;
 
 pub use candle_core::Device;
 
+/// Returns true if CUDA support was compiled in and a CUDA device can be created.
+/// Analogous to `torch.cuda.is_available()`.
+pub fn is_cuda_available() -> bool {
+    candle_core::utils::cuda_is_available() && Device::new_cuda(0).is_ok()
+}
+
+/// Returns true if Metal/MPS support was compiled in and a Metal device can be created.
+/// Analogous to `torch.backends.mps.is_available()`.
+pub fn is_metal_available() -> bool {
+    candle_core::utils::metal_is_available() && Device::new_metal(0).is_ok()
+}
+
+/// Select the best available device: CUDA > Metal > CPU.
+pub fn best_device() -> Result<Device> {
+    if is_cuda_available() {
+        return Ok(Device::new_cuda(0)?);
+    }
+    if is_metal_available() {
+        return Ok(Device::new_metal(0)?);
+    }
+    Ok(Device::Cpu)
+}
+
+/// Parse a device name string ("cpu", "metal"/"mps", "cuda") into a Device.
+pub fn parse_device(s: &str) -> Result<Device> {
+    match s.to_lowercase().as_str() {
+        "cpu" => Ok(Device::Cpu),
+        "metal" | "mps" => {
+            if !candle_core::utils::metal_is_available() {
+                bail!("Metal support not compiled. Rebuild with --features metal");
+            }
+            Ok(Device::new_metal(0)?)
+        }
+        "cuda" => {
+            if !candle_core::utils::cuda_is_available() {
+                bail!("CUDA support not compiled. Rebuild with --features cuda");
+            }
+            Ok(Device::new_cuda(0)?)
+        }
+        _ => bail!("Unknown device: {}. Supported: cpu, metal, cuda", s),
+    }
+}
+
 pub const DEFAULT_MODEL_ID: &str = "Qwen/Qwen3-ASR-0.6B";
 
 // Special token IDs

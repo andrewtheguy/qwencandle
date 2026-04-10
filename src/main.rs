@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use qwencandle::{Device, QwenAsr, DEFAULT_MODEL_ID, SUPPORTED_LANGUAGES};
+use qwencandle::{QwenAsr, DEFAULT_MODEL_ID, SUPPORTED_LANGUAGES, best_device, parse_device};
 use std::io::Read;
 
 fn print_usage() {
@@ -7,7 +7,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --model <id>       HuggingFace model ID or local path (default: {DEFAULT_MODEL_ID})");
-    eprintln!("  --device <dev>     Device: cpu, metal (default: cpu)");
+    eprintln!("  --device <dev>     Device: cpu, metal, cuda (default: auto-detect)");
     eprintln!("  --language <lang>  Force output language (e.g. English, Chinese, Japanese)");
     eprintln!("  --context <text>   Condition on previous text (system prompt for consistency)");
     eprintln!();
@@ -21,33 +21,6 @@ fn print_usage() {
     eprintln!("  ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle --device metal");
     eprintln!("  ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle -l Japanese");
     eprintln!("  ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle --context \"Previous sentence.\"");
-}
-
-fn parse_device(s: &str) -> Result<Device> {
-    match s.to_lowercase().as_str() {
-        "cpu" => Ok(Device::Cpu),
-        "metal" | "mps" => {
-            #[cfg(feature = "metal")]
-            {
-                Ok(Device::new_metal(0)?)
-            }
-            #[cfg(not(feature = "metal"))]
-            {
-                bail!("Metal support not compiled. Rebuild with: cargo build --release --features metal")
-            }
-        }
-        "cuda" => {
-            #[cfg(feature = "cuda")]
-            {
-                Ok(Device::new_cuda(0)?)
-            }
-            #[cfg(not(feature = "cuda"))]
-            {
-                bail!("CUDA support not compiled. Rebuild with: cargo build --release --features cuda")
-            }
-        }
-        _ => bail!("Unknown device: {}. Supported: cpu, metal, cuda", s),
-    }
 }
 
 fn main() -> Result<()> {
@@ -92,7 +65,7 @@ fn main() -> Result<()> {
     let model_id = model_id.unwrap_or_else(|| DEFAULT_MODEL_ID.to_string());
     let device = match &device_str {
         Some(d) => parse_device(d)?,
-        None => Device::Cpu,
+        None => best_device()?,
     };
 
     let samples = read_wav_stdin()?;

@@ -34,7 +34,7 @@ The model is automatically downloaded from HuggingFace on first use and cached i
 
 ```
 --model <id>       HuggingFace model ID or local path (default: Qwen/Qwen3-ASR-0.6B)
---device <dev>     Device: cpu, metal (default: cpu)
+--device <dev>     Device: cpu, metal, cuda (default: auto-detect)
 --language <lang>  Force output language (e.g. English, Chinese, Japanese)
 --context <text>   Condition on previous text (system prompt for consistency)
 --help             Show help
@@ -54,9 +54,10 @@ This does not mean every phase of `transcribe()` will keep all threads busy. The
 
 ### Metal GPU
 
-On macOS, build with `--features metal` and use `--device metal` for GPU acceleration:
+On macOS, build with `--features metal` for GPU acceleration. The device is auto-detected, or use `--device metal` explicitly:
 
 ```
+ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/release/qwencandle
 ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/release/qwencandle --device metal
 ```
 
@@ -90,10 +91,16 @@ ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/releas
 ## Rust library
 
 ```rust
-use qwencandle::{QwenAsr, Device};
+use qwencandle::{QwenAsr, Device, best_device, is_cuda_available, is_metal_available};
 
-let mut model = QwenAsr::load_on("Qwen/Qwen3-ASR-0.6B", &Device::Cpu)?;
+// Auto-detect best device (CUDA > Metal > CPU)
+let device = best_device()?;
+let mut model = QwenAsr::load_on("Qwen/Qwen3-ASR-0.6B", &device)?;
 let text = model.transcribe(&samples, Some("English"), None)?;
+
+// Check device availability (like torch.cuda.is_available())
+if is_cuda_available() { /* ... */ }
+if is_metal_available() { /* ... */ }
 ```
 
 ## Python bindings
@@ -132,21 +139,28 @@ maturin develop --release --features metal
 import numpy as np
 import qwencandle
 
-model = qwencandle.QwenAsr()  # auto-downloads from HuggingFace
-text = model.transcribe(samples)  # samples: numpy float32 array, 16kHz mono
+# Check device availability (like torch.cuda.is_available())
+qwencandle.is_cuda_available()   # True if CUDA compiled and available
+qwencandle.is_metal_available()  # True if Metal compiled and available
+
+# Device is required
+model = qwencandle.QwenAsr("cpu")  # auto-downloads from HuggingFace
+text = model.transcribe(samples)   # samples: numpy float32 array, 16kHz mono
 
 # with options
-model = qwencandle.QwenAsr(device="metal")
+model = qwencandle.QwenAsr("metal", model_id="Qwen/Qwen3-ASR-0.6B")
 text = model.transcribe(samples, language="English", context="Previous sentence.")
 ```
 
 ### API
 
 ```python
-qwencandle.DEFAULT_MODEL_ID   # "Qwen/Qwen3-ASR-0.6B"
-qwencandle.SUPPORTED_LANGUAGES  # list of 30 language names
+qwencandle.DEFAULT_MODEL_ID      # "Qwen/Qwen3-ASR-0.6B"
+qwencandle.SUPPORTED_LANGUAGES   # list of 30 language names
+qwencandle.is_cuda_available()   # bool
+qwencandle.is_metal_available()  # bool
 
 class QwenAsr:
-    def __init__(self, model_id=None, device="cpu"): ...
+    def __init__(self, device: str, model_id: str | None = None): ...
     def transcribe(self, samples, *, language=None, context=None) -> str: ...
 ```
