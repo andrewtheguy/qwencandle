@@ -20,6 +20,12 @@ With Metal GPU + Accelerate BLAS (macOS):
 cargo build --release --features metal,accelerate
 ```
 
+With Intel MKL BLAS (Linux x86_64):
+
+```
+cargo build --release --features mkl
+```
+
 ## Usage
 
 Input is WAV float32 16kHz mono on stdin. Use ffmpeg to convert any audio format:
@@ -40,9 +46,15 @@ The model is automatically downloaded from HuggingFace on first use and cached i
 --help             Show help
 ```
 
+### CPU acceleration
+
+On Linux x86_64, build with `--features mkl` to enable Intel MKL for significantly faster CPU inference. MKL is statically linked — no runtime installation required. It works on both Intel and AMD x86_64 CPUs (on AMD, set `MKL_DEBUG_CPU_TYPE=5` to unlock full AVX2/AVX-512 codepaths). The `mkl` feature requires x86_64 and will fail to compile on other architectures.
+
+On macOS, the `accelerate` feature uses Apple's Accelerate framework for the same purpose.
+
 ### Thread count
 
-Set `RAYON_NUM_THREADS` to control CPU parallelism for Candle CPU kernels and the mel/STFT preprocessing stage:
+Without MKL, set `RAYON_NUM_THREADS` to control CPU parallelism for Candle CPU kernels and the mel/STFT preprocessing stage:
 
 ```
 RAYON_NUM_THREADS=4 ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/release/qwencandle
@@ -50,7 +62,13 @@ RAYON_NUM_THREADS=4 ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le
 
 Defaults to all available cores if unset.
 
-This does not mean every phase of `transcribe()` will keep all threads busy. The decoder in [`src/lib.rs`](src/lib.rs) runs autoregressively one token at a time, and Candle's CPU `gemm` backend only fans out once an operation is large enough to cross its internal threading threshold. On CPU, it is normal to see some phases use fewer than `RAYON_NUM_THREADS` workers even when the env var is set.
+With MKL, thread count is controlled via `MKL_NUM_THREADS` or `OMP_NUM_THREADS` instead:
+
+```
+MKL_NUM_THREADS=4 ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/release/qwencandle
+```
+
+This does not mean every phase of `transcribe()` will keep all threads busy. The decoder in [`src/lib.rs`](src/lib.rs) runs autoregressively one token at a time, and without MKL, Candle's CPU `gemm` backend only fans out once an operation is large enough to cross its internal threading threshold. On CPU, it is normal to see some phases use fewer threads than configured.
 
 ### Metal GPU
 
@@ -131,6 +149,12 @@ With Metal GPU + Accelerate BLAS (macOS):
 
 ```
 maturin develop --release --features metal,accelerate
+```
+
+With Intel MKL BLAS (Linux x86_64):
+
+```
+maturin develop --release --features mkl
 ```
 
 ### Usage
