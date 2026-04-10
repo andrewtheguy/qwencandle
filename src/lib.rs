@@ -6,6 +6,28 @@ pub mod tokenizer;
 #[cfg(feature = "python")]
 mod python;
 
+// Candle's MKL backend references hgemm_ (half-precision GEMM) but intel-mkl-src
+// doesn't provide it. This model uses F32 only, so provide a stub to satisfy the linker.
+#[cfg(feature = "mkl")]
+#[no_mangle]
+pub extern "C" fn hgemm_(
+    _transa: *const i8,
+    _transb: *const i8,
+    _m: *const i32,
+    _n: *const i32,
+    _k: *const i32,
+    _alpha: *const u16,
+    _a: *const u16,
+    _lda: *const i32,
+    _b: *const u16,
+    _ldb: *const i32,
+    _beta: *const u16,
+    _c: *mut u16,
+    _ldc: *const i32,
+) {
+    panic!("hgemm_ (f16 matmul) is not supported with MKL — model should use F32");
+}
+
 use anyhow::{bail, Context, Result};
 use candle_core::{DType, Tensor};
 use candle_nn::VarBuilder;
