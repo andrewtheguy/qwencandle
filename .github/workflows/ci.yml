@@ -44,6 +44,16 @@ jobs:
           echo "Output: $output"
           echo "$output" | grep -qi "ask not what your country can do for you"
 
+      - name: Build release binary (MKL)
+        run: cargo build --release --features mkl
+
+      - name: Transcribe JFK fixture (MKL)
+        run: |
+          set -eo pipefail
+          output=$(cat fixtures/jfk.wav | ./target/release/qwencandle)
+          echo "Output: $output"
+          echo "$output" | grep -qi "ask not what your country can do for you"
+
       - name: Build Python extension
         env:
           PYO3_PYTHON: python
