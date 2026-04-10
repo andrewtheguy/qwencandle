@@ -85,7 +85,7 @@ jobs:
         include:
           - arch: amd64
             runs-on: ubuntu-latest
-            extra-features: ""
+            extra-features: "mkl"
           - arch: arm64
             runs-on: ubuntu-24.04-arm
             extra-features: ""
