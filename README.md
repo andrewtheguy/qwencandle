@@ -14,10 +14,10 @@ This project reimplements Qwen3-ASR inference in Rust using HuggingFace's [Candl
 cargo build --release
 ```
 
-With Metal GPU acceleration (macOS):
+With Metal GPU + Accelerate BLAS (macOS):
 
 ```
-cargo build --release --features metal
+cargo build --release --features metal,accelerate
 ```
 
 ## Usage
@@ -54,7 +54,7 @@ This does not mean every phase of `transcribe()` will keep all threads busy. The
 
 ### Metal GPU
 
-On macOS, build with `--features metal` for GPU acceleration. The device is auto-detected, or use `--device metal` explicitly:
+On macOS, build with `--features metal,accelerate` for GPU acceleration and optimized CPU BLAS. The device is auto-detected, or use `--device metal` explicitly:
 
 ```
 ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/release/qwencandle
@@ -127,10 +127,10 @@ uv pip install numpy maturin
 maturin develop --release
 ```
 
-With Metal GPU support:
+With Metal GPU + Accelerate BLAS (macOS):
 
 ```
-maturin develop --release --features metal
+maturin develop --release --features metal,accelerate
 ```
 
 ### Usage

@@ -91,7 +91,7 @@ jobs:
             extra-features: ""
           - arch: arm64
             runs-on: macos-latest
-            extra-features: "metal"
+            extra-features: "metal,accelerate"
           - arch: amd64
             runs-on: windows-latest
             extra-features: ""
