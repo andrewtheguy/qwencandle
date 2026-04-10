@@ -1,12 +1,12 @@
 # qwencandle
 
-Qwen3-ASR-0.6B speech-to-text inference in Rust, built on [Candle](https://github.com/huggingface/candle).
+Qwen3-ASR-0.6B speech-to-text inference in Rust, built on [Burn](https://github.com/tracel-ai/burn).
 
 ## Motivation
 
 The main existing Python implementations of Qwen ASR (via PyTorch / Transformers) suffer from memory leaks when running inference repeatedly on Apple Silicon with Metal/MPS. Memory grows with each transcription call and is never fully reclaimed, eventually forcing a restart. This makes them unsuitable for long-running services or batch processing workflows on macOS.
 
-This project reimplements Qwen3-ASR inference in Rust using HuggingFace's [Candle](https://github.com/huggingface/candle) framework, which provides correct Metal GPU support without the memory leak issues. The result is a lightweight, memory-stable binary (and Python library) that can transcribe audio indefinitely on Metal without degradation.
+This project reimplements Qwen3-ASR inference in Rust using the [Burn](https://github.com/tracel-ai/burn) deep learning framework with the wgpu backend, which provides Metal GPU support without the memory leak issues. The result is a lightweight, memory-stable binary (and Python library) that can transcribe audio indefinitely on Metal without degradation.
 
 ## Build
 
@@ -41,16 +41,6 @@ The model is automatically downloaded from HuggingFace on first use and cached i
 ```
 
 ### Thread count
-
-Set `RAYON_NUM_THREADS` to control CPU parallelism for Candle CPU kernels and the mel/STFT preprocessing stage:
-
-```
-RAYON_NUM_THREADS=4 ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/release/qwencandle
-```
-
-Defaults to all available cores if unset.
-
-This does not mean every phase of `transcribe()` will keep all threads busy. The decoder in [`src/lib.rs`](src/lib.rs) runs autoregressively one token at a time, and Candle's CPU `gemm` backend only fans out once an operation is large enough to cross its internal threading threshold. On CPU, it is normal to see some phases use fewer than `RAYON_NUM_THREADS` workers even when the env var is set.
 
 ### Metal GPU
 
@@ -90,9 +80,9 @@ ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/releas
 ## Rust library
 
 ```rust
-use qwencandle::{QwenAsr, Device};
+use qwencandle::QwenAsr;
 
-let mut model = QwenAsr::load_on("Qwen/Qwen3-ASR-0.6B", &Device::Cpu)?;
+let mut model = QwenAsr::load("Qwen/Qwen3-ASR-0.6B")?;
 let text = model.transcribe(&samples, Some("English"), None)?;
 ```
 
