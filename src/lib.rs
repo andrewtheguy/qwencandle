@@ -33,8 +33,11 @@ pub extern "C" fn hgemm_(
 use anyhow::{bail, Context, Result};
 use candle_core::{DType, Tensor};
 use candle_nn::VarBuilder;
-use hf_hub::api::sync::Api;
-use std::path::{Path, PathBuf};
+use hf_hub::api::sync::{Api, ApiRepo};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 pub use candle_core::Device;
 pub use gguf::{quantize_to_gguf, Quantization, DEFAULT_QUANTIZATION};
@@ -363,24 +366,134 @@ pub(crate) fn resolve_safetensors_model(model_id: &str) -> Result<(Vec<PathBuf>,
 
     let api = Api::new()?;
     let repo = api.model(model_id.to_string());
+    let remote_files = repo
+        .info()
+        .with_context(|| format!("Failed to inspect Hugging Face repo {model_id}"))?
+        .siblings
+        .into_iter()
+        .map(|sibling| sibling.rfilename)
+        .collect::<BTreeSet<_>>();
 
-    let safetensors_path = repo
-        .get("model.safetensors")
-        .context("Failed to download model.safetensors")?;
-    let vocab_path = repo
-        .get("vocab.json")
-        .context("Failed to download vocab.json")?;
-    let _merges_path = repo
-        .get("merges.txt")
-        .context("Failed to download merges.txt")?;
-    let _ = repo.get("tokenizer_config.json");
-    let _ = repo.get("tokenizer.json");
-
-    let model_dir = vocab_path.parent().unwrap().to_path_buf();
-    Ok((vec![safetensors_path], model_dir))
+    let (safetensors_paths, model_dir) = download_remote_safetensors(&repo, &remote_files)?;
+    download_remote_tokenizer_files(&repo, &remote_files)?;
+    Ok((safetensors_paths, model_dir))
 }
 
-fn find_safetensors(model_dir: &PathBuf) -> Result<Vec<PathBuf>> {
+fn download_remote_safetensors(
+    repo: &ApiRepo,
+    remote_files: &BTreeSet<String>,
+) -> Result<(Vec<PathBuf>, PathBuf)> {
+    match pick_remote_checkpoint(remote_files)? {
+        RemoteCheckpoint::Single(filename) => {
+            let safetensors_path = repo
+                .get(&filename)
+                .with_context(|| format!("Failed to download {filename}"))?;
+            let model_dir = safetensors_path
+                .parent()
+                .context("Downloaded safetensors path has no parent directory")?
+                .to_path_buf();
+            Ok((vec![safetensors_path], model_dir))
+        }
+        RemoteCheckpoint::Indexed(index_filename) => {
+            let index_path = repo
+                .get(&index_filename)
+                .with_context(|| format!("Failed to download {index_filename}"))?;
+            let model_dir = index_path
+                .parent()
+                .context("Downloaded safetensors index path has no parent directory")?
+                .to_path_buf();
+            let shard_paths = safetensors_from_index(&index_path)?;
+            for shard_path in &shard_paths {
+                let repo_path = repo_relative_path(shard_path, &model_dir)?;
+                repo.get(&repo_path)
+                    .with_context(|| format!("Failed to download {repo_path}"))?;
+            }
+            Ok((shard_paths, model_dir))
+        }
+    }
+}
+
+fn download_remote_tokenizer_files(repo: &ApiRepo, remote_files: &BTreeSet<String>) -> Result<()> {
+    let has_tokenizer_json = remote_files.contains("tokenizer.json");
+    let has_vocab_json = remote_files.contains("vocab.json");
+    let has_merges_txt = remote_files.contains("merges.txt");
+
+    if has_tokenizer_json {
+        repo.get("tokenizer.json")
+            .context("Failed to download tokenizer.json")?;
+    }
+    if remote_files.contains("tokenizer_config.json") {
+        let _ = repo.get("tokenizer_config.json");
+    }
+    if has_vocab_json && has_merges_txt {
+        repo.get("vocab.json")
+            .context("Failed to download vocab.json")?;
+        repo.get("merges.txt")
+            .context("Failed to download merges.txt")?;
+    }
+
+    if has_tokenizer_json || (has_vocab_json && has_merges_txt) {
+        return Ok(());
+    }
+
+    bail!(
+        "Remote model is missing tokenizer.json and vocab.json + merges.txt, so the tokenizer cannot be loaded"
+    );
+}
+
+fn pick_remote_checkpoint(remote_files: &BTreeSet<String>) -> Result<RemoteCheckpoint> {
+    if let Some(index_file) = pick_unique_remote_file(
+        remote_files,
+        "model.safetensors.index.json",
+        ".safetensors.index.json",
+    )? {
+        return Ok(RemoteCheckpoint::Indexed(index_file));
+    }
+
+    if let Some(weight_file) =
+        pick_unique_remote_file(remote_files, "model.safetensors", ".safetensors")?
+    {
+        return Ok(RemoteCheckpoint::Single(weight_file));
+    }
+
+    bail!("Remote model does not expose a safetensors checkpoint");
+}
+
+fn pick_unique_remote_file(
+    remote_files: &BTreeSet<String>,
+    preferred_name: &str,
+    suffix: &str,
+) -> Result<Option<String>> {
+    if remote_files.contains(preferred_name) {
+        return Ok(Some(preferred_name.to_string()));
+    }
+
+    let matches = remote_files
+        .iter()
+        .filter(|filename| filename.ends_with(suffix))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [] => Ok(None),
+        [filename] => Ok(Some(filename.clone())),
+        _ => bail!(
+            "Multiple remote files matched {suffix} but none used the standard name {preferred_name}: {:?}",
+            matches
+        ),
+    }
+}
+
+fn repo_relative_path(path: &Path, repo_root: &Path) -> Result<String> {
+    let relative = path
+        .strip_prefix(repo_root)
+        .with_context(|| format!("Path {:?} is not inside {:?}", path, repo_root))?
+        .to_str()
+        .context("Non-UTF-8 repo path")?;
+    Ok(relative.to_string())
+}
+
+fn find_safetensors(model_dir: &Path) -> Result<Vec<PathBuf>> {
     let single = model_dir.join("model.safetensors");
     if single.exists() {
         return Ok(vec![single]);
@@ -388,24 +501,77 @@ fn find_safetensors(model_dir: &PathBuf) -> Result<Vec<PathBuf>> {
 
     let index_path = model_dir.join("model.safetensors.index.json");
     if index_path.exists() {
-        let index_str = std::fs::read_to_string(&index_path)?;
-        let index: serde_json::Value = serde_json::from_str(&index_str)?;
-        let weight_map = index
-            .get("weight_map")
-            .context("Missing weight_map in index")?
-            .as_object()
-            .context("weight_map not object")?;
-
-        let mut shards: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for shard in weight_map.values() {
-            if let Some(s) = shard.as_str() {
-                shards.insert(s.to_string());
-            }
-        }
-        return Ok(shards.iter().map(|s| model_dir.join(s)).collect());
+        return safetensors_from_index(&index_path);
     }
 
-    bail!("No model.safetensors found in {:?}", model_dir);
+    let mut indexed = Vec::new();
+    let mut singles = Vec::new();
+    for entry in std::fs::read_dir(model_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+
+        if file_name.ends_with(".safetensors.index.json") {
+            indexed.push(path);
+        } else if file_name.ends_with(".safetensors") {
+            singles.push(path);
+        }
+    }
+    indexed.sort();
+    singles.sort();
+
+    match indexed.as_slice() {
+        [] => {}
+        [index_path] => return safetensors_from_index(index_path),
+        _ => bail!(
+            "Multiple safetensors index files found in {:?}: {:?}",
+            model_dir,
+            indexed
+        ),
+    }
+
+    match singles.as_slice() {
+        [] => {}
+        [single] => return Ok(vec![single.clone()]),
+        _ => bail!(
+            "Multiple .safetensors files found in {:?} without an index: {:?}",
+            model_dir,
+            singles
+        ),
+    }
+
+    bail!("No safetensors checkpoint found in {:?}", model_dir);
+}
+
+fn safetensors_from_index(index_path: &Path) -> Result<Vec<PathBuf>> {
+    let index_str = std::fs::read_to_string(index_path)?;
+    let index: serde_json::Value = serde_json::from_str(&index_str)?;
+    let weight_map = index
+        .get("weight_map")
+        .context("Missing weight_map in index")?
+        .as_object()
+        .context("weight_map not object")?;
+
+    let model_dir = index_path
+        .parent()
+        .context("Safetensors index path has no parent directory")?;
+    let mut shards = BTreeSet::new();
+    for shard in weight_map.values() {
+        if let Some(filename) = shard.as_str() {
+            shards.insert(filename.to_string());
+        }
+    }
+
+    Ok(shards
+        .iter()
+        .map(|filename| model_dir.join(filename))
+        .collect())
 }
 
 fn is_gguf_file(path: &Path) -> bool {
@@ -414,4 +580,104 @@ fn is_gguf_file(path: &Path) -> bool {
             .extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RemoteCheckpoint {
+    Single(String),
+    Indexed(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{find_safetensors, pick_remote_checkpoint, RemoteCheckpoint};
+    use anyhow::Result;
+    use std::{
+        collections::BTreeSet,
+        fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Result<Self> {
+            let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "qwencandle-test-{}-{}",
+                std::process::id(),
+                unique
+            ));
+            fs::create_dir_all(&path)?;
+            Ok(Self { path })
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn find_safetensors_reads_sharded_index() -> Result<()> {
+        let tempdir = TempDir::new()?;
+        fs::write(
+            tempdir.path().join("model.safetensors.index.json"),
+            r#"{
+                "weight_map": {
+                    "layer1": "model-00002-of-00002.safetensors",
+                    "layer0": "model-00001-of-00002.safetensors",
+                    "layer2": "model-00001-of-00002.safetensors"
+                }
+            }"#,
+        )?;
+
+        let shards = find_safetensors(tempdir.path())?;
+
+        assert_eq!(
+            shards,
+            vec![
+                tempdir.path().join("model-00001-of-00002.safetensors"),
+                tempdir.path().join("model-00002-of-00002.safetensors"),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn find_safetensors_accepts_single_nonstandard_file() -> Result<()> {
+        let tempdir = TempDir::new()?;
+        let weights = tempdir.path().join("weights.safetensors");
+        fs::write(&weights, b"")?;
+
+        let shards = find_safetensors(tempdir.path())?;
+
+        assert_eq!(shards, vec![weights]);
+        Ok(())
+    }
+
+    #[test]
+    fn pick_remote_checkpoint_prefers_index() -> Result<()> {
+        let remote_files = BTreeSet::from([
+            "model-00001-of-00002.safetensors".to_string(),
+            "model-00002-of-00002.safetensors".to_string(),
+            "model.safetensors.index.json".to_string(),
+        ]);
+
+        let checkpoint = pick_remote_checkpoint(&remote_files)?;
+
+        assert_eq!(
+            checkpoint,
+            RemoteCheckpoint::Indexed("model.safetensors.index.json".to_string())
+        );
+        Ok(())
+    }
 }
