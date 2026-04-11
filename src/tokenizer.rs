@@ -33,9 +33,7 @@ impl Tokenizer {
             tok.with_pre_tokenizer(Some(
                 tokenizers::pre_tokenizers::byte_level::ByteLevel::default(),
             ));
-            tok.with_decoder(Some(
-                tokenizers::decoders::byte_level::ByteLevel::default(),
-            ));
+            tok.with_decoder(Some(tokenizers::decoders::byte_level::ByteLevel::default()));
             tok
         };
         Ok(Self { inner })
