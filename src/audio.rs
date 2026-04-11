@@ -202,7 +202,7 @@ pub fn compute_mel_spectrogram(samples: &[f32]) -> Vec<f32> {
     let n_threads = std::thread::available_parallelism()
         .map_or(2, |n| n.get())
         .min(n_len);
-    let frames_per_thread = (n_len + n_threads - 1) / n_threads;
+    let frames_per_thread = n_len.div_ceil(n_threads);
 
     let outputs = thread::scope(|s| {
         let mut handles = Vec::new();
@@ -235,7 +235,12 @@ pub fn compute_mel_spectrogram(samples: &[f32]) -> Vec<f32> {
     }
 
     // Dynamic clamping and normalization: max(mel, global_max - 8) then (x + 4) / 4
-    let mmax = mel.iter().copied().reduce(f32::max).expect("mel is non-empty") - 8.0;
+    let mmax = mel
+        .iter()
+        .copied()
+        .reduce(f32::max)
+        .expect("mel is non-empty")
+        - 8.0;
     for m in mel.iter_mut() {
         *m = m.max(mmax);
         *m = (*m + 4.0) / 4.0;

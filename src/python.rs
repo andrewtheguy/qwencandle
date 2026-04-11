@@ -26,8 +26,8 @@ impl QwenAsr {
     #[pyo3(signature = (device, model_id=None))]
     fn new(device: &str, model_id: Option<&str>) -> PyResult<Self> {
         let model_id = model_id.unwrap_or(DEFAULT_MODEL_ID);
-        let device = crate::parse_device(device)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let device =
+            crate::parse_device(device).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         let inner = RustQwenAsr::load_on(model_id, &device)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(Self {
@@ -52,11 +52,7 @@ impl QwenAsr {
             self.inner
                 .lock()
                 .unwrap()
-                .transcribe(
-                    &samples,
-                    language.as_deref(),
-                    context.as_deref(),
-                )
+                .transcribe(&samples, language.as_deref(), context.as_deref())
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
     }
@@ -67,10 +63,7 @@ impl QwenAsr {
 fn qwencandle(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<QwenAsr>()?;
     module.add("DEFAULT_MODEL_ID", DEFAULT_MODEL_ID)?;
-    module.add(
-        "SUPPORTED_LANGUAGES",
-        SUPPORTED_LANGUAGES.to_vec(),
-    )?;
+    module.add("SUPPORTED_LANGUAGES", SUPPORTED_LANGUAGES.to_vec())?;
     module.add_function(wrap_pyfunction!(is_cuda_available_py, module)?)?;
     module.add_function(wrap_pyfunction!(is_metal_available_py, module)?)?;
     Ok(())

@@ -1,6 +1,8 @@
 pub mod audio;
 mod decoder;
 mod encoder;
+mod gguf;
+mod layers;
 pub mod tokenizer;
 
 #[cfg(feature = "python")]
@@ -32,9 +34,10 @@ use anyhow::{bail, Context, Result};
 use candle_core::{DType, Tensor};
 use candle_nn::VarBuilder;
 use hf_hub::api::sync::Api;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub use candle_core::Device;
+pub use gguf::{quantize_to_gguf, Quantization, DEFAULT_QUANTIZATION};
 
 /// Returns true if CUDA support was compiled in and a CUDA device can be created.
 /// Analogous to `torch.cuda.is_available()`.
@@ -91,16 +94,45 @@ const TOKEN_ENDOFTEXT: u32 = 151643;
 const TOKEN_ASR_TEXT: u32 = 151704;
 
 const PROMPT_SUFFIX: &[u32] = &[
-    TOKEN_AUDIO_END, TOKEN_IM_END, 198,
-    TOKEN_IM_START, 77091, 198,
+    TOKEN_AUDIO_END,
+    TOKEN_IM_END,
+    198,
+    TOKEN_IM_START,
+    77091,
+    198,
 ];
 
 pub const SUPPORTED_LANGUAGES: &[&str] = &[
-    "Chinese", "English", "Cantonese", "Arabic", "German", "French",
-    "Spanish", "Portuguese", "Indonesian", "Italian", "Korean", "Russian",
-    "Thai", "Vietnamese", "Japanese", "Turkish", "Hindi", "Malay",
-    "Dutch", "Swedish", "Danish", "Finnish", "Polish", "Czech",
-    "Filipino", "Persian", "Greek", "Romanian", "Hungarian", "Macedonian",
+    "Chinese",
+    "English",
+    "Cantonese",
+    "Arabic",
+    "German",
+    "French",
+    "Spanish",
+    "Portuguese",
+    "Indonesian",
+    "Italian",
+    "Korean",
+    "Russian",
+    "Thai",
+    "Vietnamese",
+    "Japanese",
+    "Turkish",
+    "Hindi",
+    "Malay",
+    "Dutch",
+    "Swedish",
+    "Danish",
+    "Finnish",
+    "Polish",
+    "Czech",
+    "Filipino",
+    "Persian",
+    "Greek",
+    "Romanian",
+    "Hungarian",
+    "Macedonian",
 ];
 
 pub struct QwenAsr {
@@ -117,18 +149,40 @@ impl QwenAsr {
 
     /// Load model on a specific device from a HuggingFace model ID or local directory path.
     pub fn load_on(model_id: &str, device: &Device) -> Result<Self> {
-        let (safetensors_paths, model_dir) = resolve_model(model_id)?;
-        let dtype = DType::F32;
+        match resolve_model(model_id)? {
+            ModelSource::Safetensors {
+                safetensors_paths,
+                model_dir,
+            } => {
+                let vb = unsafe {
+                    VarBuilder::from_mmaped_safetensors(&safetensors_paths, DType::F32, device)?
+                };
 
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&safetensors_paths, dtype, device)?
-        };
+                let encoder = encoder::AudioEncoder::load(vb.pp("thinker.audio_tower"), device)?;
+                let tokenizer = tokenizer::Tokenizer::load(&model_dir)?;
+                let decoder = decoder::Decoder::load(vb.pp("thinker"), device)?;
 
-        let encoder = encoder::AudioEncoder::load(vb.pp("thinker.audio_tower"), device)?;
-        let tokenizer = tokenizer::Tokenizer::load(&model_dir)?;
-        let decoder = decoder::Decoder::load(vb.pp("thinker"), device)?;
-
-        Ok(Self { encoder, decoder, tokenizer })
+                Ok(Self {
+                    encoder,
+                    decoder,
+                    tokenizer,
+                })
+            }
+            ModelSource::Gguf {
+                gguf_path,
+                model_dir,
+            } => {
+                let mut loader = gguf::GgufLoader::open(&gguf_path, device)?;
+                let encoder = encoder::AudioEncoder::load_gguf(&mut loader, device)?;
+                let tokenizer = tokenizer::Tokenizer::load(&model_dir)?;
+                let decoder = decoder::Decoder::load_gguf(&mut loader, device)?;
+                Ok(Self {
+                    encoder,
+                    decoder,
+                    tokenizer,
+                })
+            }
+        }
     }
 
     /// Transcribe f32 PCM audio samples (16kHz mono).
@@ -140,7 +194,10 @@ impl QwenAsr {
     ) -> Result<String> {
         // Validate language
         if let Some(lang) = language {
-            if !SUPPORTED_LANGUAGES.iter().any(|&l| l.eq_ignore_ascii_case(lang)) {
+            if !SUPPORTED_LANGUAGES
+                .iter()
+                .any(|&l| l.eq_ignore_ascii_case(lang))
+            {
                 bail!(
                     "Unsupported language: {}\nSupported: {}",
                     lang,
@@ -177,13 +234,13 @@ impl QwenAsr {
         let mut input_ids: Vec<u32> = Vec::new();
         input_ids.push(TOKEN_IM_START);
         input_ids.push(8948); // "system"
-        input_ids.push(198);  // "\n"
+        input_ids.push(198); // "\n"
         input_ids.extend_from_slice(&context_tokens);
         input_ids.push(TOKEN_IM_END);
-        input_ids.push(198);  // "\n"
+        input_ids.push(198); // "\n"
         input_ids.push(TOKEN_IM_START);
-        input_ids.push(872);  // "user"
-        input_ids.push(198);  // "\n"
+        input_ids.push(872); // "user"
+        input_ids.push(198); // "\n"
         input_ids.push(TOKEN_AUDIO_START);
         let prefix_len = input_ids.len();
         input_ids.extend(std::iter::repeat_n(TOKEN_AUDIO_PAD, n_audio));
@@ -194,7 +251,8 @@ impl QwenAsr {
         // Embed tokens and replace audio positions
         let input_embeds = self.decoder.embed_tokens(&input_ids)?;
         let before = input_embeds.narrow(0, 0, prefix_len)?;
-        let after = input_embeds.narrow(0, prefix_len + n_audio, prompt_len - prefix_len - n_audio)?;
+        let after =
+            input_embeds.narrow(0, prefix_len + n_audio, prompt_len - prefix_len - n_audio)?;
         let input_embeds = Tensor::cat(&[&before, &audio_embeds, &after], 0)?;
 
         // Reset KV cache for fresh transcription
@@ -235,22 +293,85 @@ impl QwenAsr {
     }
 }
 
-/// Resolve model: local directory or HuggingFace hub download.
-fn resolve_model(model_id: &str) -> Result<(Vec<PathBuf>, PathBuf)> {
+enum ModelSource {
+    Safetensors {
+        safetensors_paths: Vec<PathBuf>,
+        model_dir: PathBuf,
+    },
+    Gguf {
+        gguf_path: PathBuf,
+        model_dir: PathBuf,
+    },
+}
+
+/// Resolve model: local GGUF, local safetensors directory, or HuggingFace hub download.
+fn resolve_model(model_id: &str) -> Result<ModelSource> {
+    let local = PathBuf::from(model_id);
+    if is_gguf_file(&local) {
+        let model_dir = local
+            .parent()
+            .map(|parent| {
+                if parent.as_os_str().is_empty() {
+                    PathBuf::from(".")
+                } else {
+                    parent.to_path_buf()
+                }
+            })
+            .unwrap_or_else(|| PathBuf::from("."));
+        return Ok(ModelSource::Gguf {
+            gguf_path: local,
+            model_dir,
+        });
+    }
+
+    if local.is_dir() {
+        let gguf_path = local.join("model.gguf");
+        if gguf_path.exists() {
+            return Ok(ModelSource::Gguf {
+                gguf_path,
+                model_dir: local,
+            });
+        }
+
+        let safetensors = find_safetensors(&local)?;
+        return Ok(ModelSource::Safetensors {
+            safetensors_paths: safetensors,
+            model_dir: local,
+        });
+    }
+
+    let (safetensors_paths, model_dir) = resolve_safetensors_model(model_id)?;
+    Ok(ModelSource::Safetensors {
+        safetensors_paths,
+        model_dir,
+    })
+}
+
+pub(crate) fn resolve_safetensors_model(model_id: &str) -> Result<(Vec<PathBuf>, PathBuf)> {
     let local = PathBuf::from(model_id);
     if local.is_dir() {
         let safetensors = find_safetensors(&local)?;
         return Ok((safetensors, local));
     }
 
+    if is_gguf_file(&local) {
+        bail!(
+            "Expected a safetensors source model for quantization, got {:?}",
+            local
+        );
+    }
+
     let api = Api::new()?;
     let repo = api.model(model_id.to_string());
 
-    let safetensors_path = repo.get("model.safetensors")
+    let safetensors_path = repo
+        .get("model.safetensors")
         .context("Failed to download model.safetensors")?;
-    let vocab_path = repo.get("vocab.json")
+    let vocab_path = repo
+        .get("vocab.json")
         .context("Failed to download vocab.json")?;
-    let _merges_path = repo.get("merges.txt")
+    let _merges_path = repo
+        .get("merges.txt")
         .context("Failed to download merges.txt")?;
     let _ = repo.get("tokenizer_config.json");
     let _ = repo.get("tokenizer.json");
@@ -285,4 +406,12 @@ fn find_safetensors(model_dir: &PathBuf) -> Result<Vec<PathBuf>> {
     }
 
     bail!("No model.safetensors found in {:?}", model_dir);
+}
+
+fn is_gguf_file(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
 }

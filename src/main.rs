@@ -1,12 +1,22 @@
-use anyhow::{bail, Result};
-use qwencandle::{QwenAsr, DEFAULT_MODEL_ID, SUPPORTED_LANGUAGES, best_device, parse_device};
+use anyhow::{bail, Context, Result};
+use qwencandle::{
+    best_device, parse_device, quantize_to_gguf, Quantization, QwenAsr, DEFAULT_MODEL_ID,
+    DEFAULT_QUANTIZATION, SUPPORTED_LANGUAGES,
+};
 use std::io::Read;
+use std::path::PathBuf;
 
 fn print_usage() {
-    eprintln!("Usage: ffmpeg -i INPUT -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle [options]");
+    eprintln!("Usage:");
+    eprintln!(
+        "  ffmpeg -i INPUT -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle [options]"
+    );
+    eprintln!("  qwencandle quantize --src <id-or-path> --dst <dir> [--dtype q8_0]");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --model <id>       HuggingFace model ID or local path (default: {DEFAULT_MODEL_ID})");
+    eprintln!(
+        "  --model <id>       HuggingFace model ID or local path (default: {DEFAULT_MODEL_ID})"
+    );
     eprintln!("  --device <dev>     Device: cpu, metal, cuda (default: auto-detect)");
     eprintln!("  --language <lang>  Force output language (e.g. English, Chinese, Japanese)");
     eprintln!("  --context <text>   Condition on previous text (system prompt for consistency)");
@@ -19,12 +29,21 @@ fn print_usage() {
     eprintln!("Examples:");
     eprintln!("  ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle");
     eprintln!("  ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle --device metal");
-    eprintln!("  ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle -l Japanese");
+    eprintln!(
+        "  ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle -l Japanese"
+    );
     eprintln!("  ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle --context \"Previous sentence.\"");
+    eprintln!(
+        "  qwencandle quantize --src Qwen/Qwen3-ASR-0.6B --dst ./qwen3-asr-q8_0 --dtype q8_0"
+    );
 }
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "quantize") {
+        return run_quantize(&args[2..]);
+    }
+
     let mut model_id: Option<String> = None;
     let mut language: Option<String> = None;
     let mut context: Option<String> = None;
@@ -35,22 +54,30 @@ fn main() -> Result<()> {
         match args[i].as_str() {
             "--language" | "-l" => {
                 i += 1;
-                if i >= args.len() { bail!("--language requires a value"); }
+                if i >= args.len() {
+                    bail!("--language requires a value");
+                }
                 language = Some(args[i].clone());
             }
             "--model" | "-m" => {
                 i += 1;
-                if i >= args.len() { bail!("--model requires a value"); }
+                if i >= args.len() {
+                    bail!("--model requires a value");
+                }
                 model_id = Some(args[i].clone());
             }
             "--context" | "-c" => {
                 i += 1;
-                if i >= args.len() { bail!("--context requires a value"); }
+                if i >= args.len() {
+                    bail!("--context requires a value");
+                }
                 context = Some(args[i].clone());
             }
             "--device" | "-d" => {
                 i += 1;
-                if i >= args.len() { bail!("--device requires a value"); }
+                if i >= args.len() {
+                    bail!("--device requires a value");
+                }
                 device_str = Some(args[i].clone());
             }
             "--help" | "-h" => {
@@ -69,18 +96,68 @@ fn main() -> Result<()> {
     };
 
     let samples = read_wav_stdin()?;
-    eprintln!("Audio: {} samples ({:.1}s)", samples.len(), samples.len() as f32 / 16000.0);
+    eprintln!(
+        "Audio: {} samples ({:.1}s)",
+        samples.len(),
+        samples.len() as f32 / 16000.0
+    );
 
     eprintln!("Loading model on {:?}...", device);
     let mut model = QwenAsr::load_on(&model_id, &device)?;
 
-    let text = model.transcribe(
-        &samples,
-        language.as_deref(),
-        context.as_deref(),
-    )?;
+    let text = model.transcribe(&samples, language.as_deref(), context.as_deref())?;
     println!("{text}");
 
+    Ok(())
+}
+
+fn run_quantize(args: &[String]) -> Result<()> {
+    let mut src: Option<String> = None;
+    let mut dst: Option<PathBuf> = None;
+    let mut dtype = DEFAULT_QUANTIZATION;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--src" | "-s" => {
+                i += 1;
+                if i >= args.len() {
+                    bail!("--src requires a value");
+                }
+                src = Some(args[i].clone());
+            }
+            "--dst" | "-o" => {
+                i += 1;
+                if i >= args.len() {
+                    bail!("--dst requires a value");
+                }
+                dst = Some(PathBuf::from(&args[i]));
+            }
+            "--dtype" | "-t" => {
+                i += 1;
+                if i >= args.len() {
+                    bail!("--dtype requires a value");
+                }
+                dtype = args[i].parse::<Quantization>()?;
+            }
+            "--help" | "-h" => {
+                print_usage();
+                std::process::exit(0);
+            }
+            _ => bail!(
+                "Unknown quantize argument: {}. Use --help for usage.",
+                args[i]
+            ),
+        }
+        i += 1;
+    }
+
+    let src = src.context("--src is required")?;
+    let dst = dst.context("--dst is required")?;
+
+    eprintln!("Quantizing {} to {:?} with {}...", src, dst, dtype.as_str(),);
+    let gguf_path = quantize_to_gguf(&src, &dst, dtype)?;
+    eprintln!("Wrote {:?}", gguf_path);
     Ok(())
 }
 
