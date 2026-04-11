@@ -36,6 +36,11 @@ ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/releas
 
 The model is automatically downloaded from HuggingFace on first use and cached in `~/.cache/huggingface/`.
 
+There are two model flows:
+
+- Default inference uses the original HuggingFace `safetensors` checkpoint.
+- Persistent quantized inference uses a local `GGUF` directory produced by `qwencandle quantize` and selected with `--model /path/to/dir`.
+
 ### Options
 
 ```
@@ -44,6 +49,54 @@ The model is automatically downloaded from HuggingFace on first use and cached i
 --language <lang>  Force output language (e.g. English, Chinese, Japanese)
 --context <text>   Condition on previous text (system prompt for consistency)
 --help             Show help
+```
+
+### Quantize
+
+Create a persistent quantized `GGUF` model directory:
+
+```
+cargo run --release --features metal -- quantize \
+  --src Qwen/Qwen3-ASR-0.6B \
+  --dst ./qwen3-asr-q8_0 \
+  --dtype q8_0
+```
+
+Then run inference against the exported model:
+
+```
+ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | \
+  ./target/release/qwencandle --model ./qwen3-asr-q8_0 --device cpu
+```
+
+The generated directory contains:
+
+- `model.gguf`
+- tokenizer files copied from the source model (`tokenizer.json` or `vocab.json` + `merges.txt`)
+
+Supported quantization dtypes:
+
+- Recommended for this model: `q8_0`, `q5_0`, `q4_0`
+- Also supported by the CLI: `q4k`, `q5k`, `q6k`, `q8k`
+
+Important: the `K` formats can fail on this model. Some Qwen3-ASR-0.6B linear weights have last dimension `896`, and Candle requires the quantized tensor's last dimension to be divisible by the format block size. The exporter fails explicitly instead of silently falling back. For example:
+
+```
+qwencandle quantize --src Qwen/Qwen3-ASR-0.6B --dst ./bad --dtype q6k
+# Error: ... last dim 896 is not divisible by block size 256
+```
+
+Important: the default CPU command below does not use the quantized model:
+
+```
+cat fixtures/jfk.wav | cargo run --release --features metal -- --device cpu
+```
+
+That command still loads the default `Qwen/Qwen3-ASR-0.6B` safetensors checkpoint. To run the exported quantized `GGUF`, you must pass `--model` pointing at the quantized directory:
+
+```
+cat fixtures/jfk.wav | cargo run --release --features metal -- \
+  --model ./qwen3-asr-q8_0 --device cpu
 ```
 
 ### CPU acceleration
@@ -61,6 +114,8 @@ RAYON_NUM_THREADS=4 ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le
 ```
 
 Defaults to all available cores if unset.
+
+For quantized `GGUF` CPU inference, thread count is also controlled by `RAYON_NUM_THREADS`. The quantized CPU kernels use Candle's Rayon-based path rather than MKL.
 
 With MKL, thread count is controlled via `MKL_NUM_THREADS` or `OMP_NUM_THREADS` instead:
 
@@ -104,6 +159,13 @@ To use a locally downloaded model instead of auto-downloading:
 ```
 huggingface-cli download Qwen/Qwen3-ASR-0.6B --local-dir qwen3-asr-0.6b
 ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/release/qwencandle --model ./qwen3-asr-0.6b
+```
+
+To use a local quantized GGUF directory:
+
+```
+ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | \
+  ./target/release/qwencandle --model ./qwen3-asr-q8_0 --device cpu
 ```
 
 ## Rust library
@@ -174,6 +236,12 @@ text = model.transcribe(samples)   # samples: numpy float32 array, 16kHz mono
 # with options
 model = qwencandle.QwenAsr("metal", model_id="Qwen/Qwen3-ASR-0.6B")
 text = model.transcribe(samples, language="English", context="Previous sentence.")
+
+# local quantized GGUF directory
+model = qwencandle.QwenAsr("cpu", model_id="./qwen3-asr-q8_0")
+
+# direct GGUF file path also works if tokenizer files are alongside it
+model = qwencandle.QwenAsr("cpu", model_id="./qwen3-asr-q8_0/model.gguf")
 ```
 
 ### API
@@ -185,6 +253,8 @@ qwencandle.is_cuda_available()   # bool
 qwencandle.is_metal_available()  # bool
 
 class QwenAsr:
+    # model_id may be a HuggingFace model ID, local safetensors directory,
+    # local GGUF directory, or direct .gguf file path
     def __init__(self, device: str, model_id: str | None = None): ...
     def transcribe(self, samples, *, language=None, context=None) -> str: ...
 ```

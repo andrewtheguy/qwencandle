@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "qwencandle"
 version = "0.0.6"
-description = "Qwen3-ASR-0.6B speech-to-text inference via Candle"
+description = "Qwen3-ASR-0.6B speech-to-text inference via Candle with local GGUF quantized model support"
 requires-python = ">=3.9"
 dependencies = ["numpy>=1.26"]
 
