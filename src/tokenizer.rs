@@ -53,18 +53,158 @@ impl Tokenizer {
         // If <asr_text> token present, decode only tokens after it
         if let Some(pos) = token_ids.iter().position(|&t| t == TOKEN_ASR_TEXT) {
             let after = &token_ids[pos + 1..];
-            return self
-                .inner
+            self.inner
                 .decode(after, true)
                 .unwrap_or_default()
                 .trim()
-                .to_string();
+                .to_string()
+        } else {
+            self.inner
+                .decode(token_ids, true)
+                .unwrap_or_default()
+                .trim()
+                .to_string()
         }
+    }
+}
 
-        self.inner
-            .decode(token_ids, true)
-            .unwrap_or_default()
-            .trim()
-            .to_string()
+/// Collapse character runs longer than `threshold` to a single occurrence.
+/// Ported from Qwen3-ASR reference: `detect_and_fix_repetitions`.
+fn fix_char_repeats(s: &str, threshold: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut result = String::with_capacity(n);
+    let mut i = 0;
+    while i < n {
+        let ch = chars[i];
+        let mut count = 1;
+        while i + count < n && chars[i + count] == ch {
+            count += 1;
+        }
+        if count > threshold {
+            result.push(ch);
+        } else {
+            for _ in 0..count {
+                result.push(ch);
+            }
+        }
+        i += count;
+    }
+    result
+}
+
+/// Collapse repeated patterns longer than `threshold` repetitions to a single occurrence.
+/// Ported from Qwen3-ASR reference: `detect_and_fix_repetitions`.
+fn fix_pattern_repeats(s: &str, threshold: usize, max_pattern_len: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let min_repeat_chars = threshold * 2;
+    if n < min_repeat_chars {
+        return s.to_string();
+    }
+
+    let mut result = String::with_capacity(n);
+    let mut i = 0;
+    let mut found_global = false;
+
+    while i <= n.saturating_sub(min_repeat_chars) {
+        let mut found = false;
+        for k in 1..=max_pattern_len {
+            if i + k * threshold > n {
+                break;
+            }
+            let pattern = &chars[i..i + k];
+            let mut valid = true;
+            for rep in 1..threshold {
+                let start_idx = i + rep * k;
+                if start_idx + k > n || chars[start_idx..start_idx + k] != *pattern {
+                    valid = false;
+                    break;
+                }
+            }
+            if valid {
+                // Count total repetitions
+                let mut end_index = i + threshold * k;
+                while end_index + k <= n && chars[end_index..end_index + k] == *pattern {
+                    end_index += k;
+                }
+                // Keep one occurrence of the pattern
+                for &ch in pattern {
+                    result.push(ch);
+                }
+                // Recursively fix the remainder
+                let remainder: String = chars[end_index..].iter().collect();
+                result.push_str(&fix_pattern_repeats(&remainder, threshold, max_pattern_len));
+                found = true;
+                found_global = true;
+                i = n; // we've handled the rest via recursion
+                break;
+            }
+        }
+        if found {
+            break;
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    if !found_global && i < n {
+        for &ch in &chars[i..] {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
+/// Detect and fix repetitive output from the ASR model.
+/// Matches the reference implementation's `detect_and_fix_repetitions`.
+pub fn detect_and_fix_repetitions(text: &str, threshold: usize) -> String {
+    let text = fix_char_repeats(text, threshold);
+    fix_pattern_repeats(&text, threshold, 20)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn char_repeats_collapsed() {
+        // 25 'a's should collapse to 1 (threshold=20)
+        let input = "a".repeat(25);
+        assert_eq!(fix_char_repeats(&input, 20), "a");
+    }
+
+    #[test]
+    fn char_repeats_below_threshold_kept() {
+        let input = "a".repeat(19);
+        assert_eq!(fix_char_repeats(&input, 20), input);
+    }
+
+    #[test]
+    fn pattern_repeats_collapsed() {
+        // "hello" repeated 25 times should collapse to 1
+        let input = "hello".repeat(25);
+        assert_eq!(fix_pattern_repeats(&input, 20, 20), "hello");
+    }
+
+    #[test]
+    fn pattern_repeats_below_threshold_kept() {
+        let input = "hello".repeat(5);
+        assert_eq!(fix_pattern_repeats(&input, 20, 20), input);
+    }
+
+    #[test]
+    fn mixed_repetitions() {
+        let input = format!("Good morning. {}", "Hello world. ".repeat(25));
+        let result = detect_and_fix_repetitions(&input, 20);
+        assert_eq!(result, "Good morning. Hello world. ");
+    }
+
+    #[test]
+    fn no_repetitions_unchanged() {
+        let input = "And so my fellow Americans, ask not what your country can do for you.";
+        assert_eq!(detect_and_fix_repetitions(input, 20), input);
     }
 }

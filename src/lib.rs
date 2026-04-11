@@ -189,11 +189,19 @@ impl QwenAsr {
     }
 
     /// Transcribe f32 PCM audio samples (16kHz mono).
+    ///
+    /// `repetition_threshold`: disabled by default. When set to `Some(n)`,
+    /// collapses character/pattern runs repeating more than `n` times.
+    /// The Qwen3-ASR reference uses 20.
+    ///
+    /// `max_new_tokens`: maximum tokens to generate (default: 512).
     pub fn transcribe(
         &mut self,
         samples: &[f32],
         language: Option<&str>,
         context: Option<&str>,
+        repetition_threshold: Option<usize>,
+        max_new_tokens: Option<usize>,
     ) -> Result<String> {
         // Validate language
         if let Some(lang) = language {
@@ -272,7 +280,7 @@ impl QwenAsr {
         let mut generated = vec![token];
 
         // Autoregressive decode
-        let max_new_tokens = 1024;
+        let max_new_tokens = max_new_tokens.unwrap_or(512);
         for step in 0..max_new_tokens - 1 {
             if token == TOKEN_ENDOFTEXT || token == TOKEN_IM_END {
                 break;
@@ -292,7 +300,11 @@ impl QwenAsr {
             }
         }
 
-        Ok(self.tokenizer.decode(&generated))
+        let text = self.tokenizer.decode(&generated);
+        Ok(match repetition_threshold {
+            Some(t) => tokenizer::detect_and_fix_repetitions(&text, t),
+            None => text,
+        })
     }
 }
 

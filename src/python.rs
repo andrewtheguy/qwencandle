@@ -35,13 +35,15 @@ impl QwenAsr {
         })
     }
 
-    #[pyo3(signature = (samples, *, language=None, context=None))]
+    #[pyo3(signature = (samples, *, language=None, context=None, repetition_threshold=None, max_new_tokens=None))]
     fn transcribe(
         &self,
         py: Python<'_>,
         samples: PyReadonlyArray1<'_, f32>,
         language: Option<&str>,
         context: Option<&str>,
+        repetition_threshold: Option<usize>,
+        max_new_tokens: Option<usize>,
     ) -> PyResult<String> {
         // Copy data to owned types before releasing the GIL
         let samples = samples.as_slice()?.to_vec();
@@ -52,7 +54,13 @@ impl QwenAsr {
             self.inner
                 .lock()
                 .unwrap()
-                .transcribe(&samples, language.as_deref(), context.as_deref())
+                .transcribe(
+                    &samples,
+                    language.as_deref(),
+                    context.as_deref(),
+                    repetition_threshold,
+                    max_new_tokens,
+                )
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
     }
