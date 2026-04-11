@@ -435,7 +435,8 @@ fn download_remote_tokenizer_files(repo: &ApiRepo, remote_files: &BTreeSet<Strin
             .context("Failed to download tokenizer.json")?;
     }
     if remote_files.contains("tokenizer_config.json") {
-        let _ = repo.get("tokenizer_config.json");
+        repo.get("tokenizer_config.json")
+            .context("Failed to download tokenizer_config.json")?;
     }
     if has_vocab_json && has_merges_txt {
         repo.get("vocab.json")

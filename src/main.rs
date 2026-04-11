@@ -105,7 +105,13 @@ fn main() -> Result<()> {
     eprintln!("Loading model on {:?}...", device);
     let mut model = QwenAsr::load_on(&model_id, &device)?;
 
-    let text = model.transcribe(&samples, language.as_deref(), context.as_deref(), None, None)?;
+    let text = model.transcribe(
+        &samples,
+        language.as_deref(),
+        context.as_deref(),
+        None,
+        None,
+    )?;
     println!("{text}");
 
     Ok(())
