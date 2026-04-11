@@ -8,17 +8,19 @@ use anyhow::Result as AnyResult;
 use candle_core::{DType, Device, Module, Result, Tensor};
 use candle_nn::{kv_cache::ConcatKvCache, linear_no_bias, Embedding, RmsNorm, VarBuilder};
 
-// 0.6B decoder config
-const HIDDEN_SIZE: usize = 1024;
-const N_LAYERS: usize = 28;
-const N_HEADS: usize = 16;
-const N_KV_HEADS: usize = 8;
-const HEAD_DIM: usize = 128;
-const INTERMEDIATE: usize = 3072;
-pub const VOCAB_SIZE: usize = 151936;
-const ROPE_THETA: f64 = 1_000_000.0;
-const RMS_EPS: f64 = 1e-6;
-const MAX_SEQ_LEN: usize = 65536; // model config max_position_embeddings (official ASR limit: 1200s / 20min)
+#[derive(Clone)]
+pub struct DecoderConfig {
+    pub hidden_size: usize,
+    pub n_layers: usize,
+    pub n_heads: usize,
+    pub n_kv_heads: usize,
+    pub head_dim: usize,
+    pub intermediate: usize,
+    pub vocab_size: usize,
+    pub rope_theta: f64,
+    pub rms_eps: f64,
+    pub max_seq_len: usize,
+}
 
 // ── RoPE ────────────────────────────────────────────────────────────────────
 
@@ -28,17 +30,17 @@ struct RotaryEmbedding {
 }
 
 impl RotaryEmbedding {
-    fn new(dtype: DType, device: &Device) -> Result<Self> {
-        let inv_freq: Vec<f32> = (0..HEAD_DIM)
+    fn new(dtype: DType, device: &Device, cfg: &DecoderConfig) -> Result<Self> {
+        let inv_freq: Vec<f32> = (0..cfg.head_dim)
             .step_by(2)
-            .map(|i| 1.0 / ROPE_THETA.powf(i as f64 / HEAD_DIM as f64) as f32)
+            .map(|i| 1.0 / cfg.rope_theta.powf(i as f64 / cfg.head_dim as f64) as f32)
             .collect();
         let inv_freq_len = inv_freq.len();
         let inv_freq =
             Tensor::from_vec(inv_freq, (1, inv_freq_len), device)?.to_dtype(DType::F32)?;
-        let t = Tensor::arange(0u32, MAX_SEQ_LEN as u32, device)?
+        let t = Tensor::arange(0u32, cfg.max_seq_len as u32, device)?
             .to_dtype(DType::F32)?
-            .reshape((MAX_SEQ_LEN, 1))?;
+            .reshape((cfg.max_seq_len, 1))?;
         let freqs = t.matmul(&inv_freq)?;
         Ok(Self {
             sin: freqs.sin()?.to_dtype(dtype)?,
@@ -67,46 +69,55 @@ struct Attention {
     q_norm: RmsNorm,
     k_norm: RmsNorm,
     kv_cache: ConcatKvCache,
+    n_heads: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
 }
 
 impl Attention {
-    fn load(vb: VarBuilder) -> Result<Self> {
+    fn load(vb: VarBuilder, cfg: &DecoderConfig) -> Result<Self> {
         Ok(Self {
             q_proj: LinearLayer::from_linear(linear_no_bias(
-                HIDDEN_SIZE,
-                N_HEADS * HEAD_DIM,
+                cfg.hidden_size,
+                cfg.n_heads * cfg.head_dim,
                 vb.pp("q_proj"),
             )?),
             k_proj: LinearLayer::from_linear(linear_no_bias(
-                HIDDEN_SIZE,
-                N_KV_HEADS * HEAD_DIM,
+                cfg.hidden_size,
+                cfg.n_kv_heads * cfg.head_dim,
                 vb.pp("k_proj"),
             )?),
             v_proj: LinearLayer::from_linear(linear_no_bias(
-                HIDDEN_SIZE,
-                N_KV_HEADS * HEAD_DIM,
+                cfg.hidden_size,
+                cfg.n_kv_heads * cfg.head_dim,
                 vb.pp("v_proj"),
             )?),
             o_proj: LinearLayer::from_linear(linear_no_bias(
-                N_HEADS * HEAD_DIM,
-                HIDDEN_SIZE,
+                cfg.n_heads * cfg.head_dim,
+                cfg.hidden_size,
                 vb.pp("o_proj"),
             )?),
-            q_norm: candle_nn::rms_norm(HEAD_DIM, RMS_EPS, vb.pp("q_norm"))?,
-            k_norm: candle_nn::rms_norm(HEAD_DIM, RMS_EPS, vb.pp("k_norm"))?,
+            q_norm: candle_nn::rms_norm(cfg.head_dim, cfg.rms_eps, vb.pp("q_norm"))?,
+            k_norm: candle_nn::rms_norm(cfg.head_dim, cfg.rms_eps, vb.pp("k_norm"))?,
             kv_cache: ConcatKvCache::new(2), // dim=2 for [B,H,S,D]
+            n_heads: cfg.n_heads,
+            n_kv_heads: cfg.n_kv_heads,
+            head_dim: cfg.head_dim,
         })
     }
 
-    fn load_gguf(loader: &mut GgufLoader, prefix: &str) -> AnyResult<Self> {
+    fn load_gguf(loader: &mut GgufLoader, prefix: &str, cfg: &DecoderConfig) -> AnyResult<Self> {
         Ok(Self {
             q_proj: load_quantized_linear(loader, &format!("{prefix}.q_proj"))?,
             k_proj: load_quantized_linear(loader, &format!("{prefix}.k_proj"))?,
             v_proj: load_quantized_linear(loader, &format!("{prefix}.v_proj"))?,
             o_proj: load_quantized_linear(loader, &format!("{prefix}.o_proj"))?,
-            q_norm: load_rms_norm(loader, &format!("{prefix}.q_norm"))?,
-            k_norm: load_rms_norm(loader, &format!("{prefix}.k_norm"))?,
+            q_norm: load_rms_norm(loader, &format!("{prefix}.q_norm"), cfg.rms_eps)?,
+            k_norm: load_rms_norm(loader, &format!("{prefix}.k_norm"), cfg.rms_eps)?,
             kv_cache: ConcatKvCache::new(2),
+            n_heads: cfg.n_heads,
+            n_kv_heads: cfg.n_kv_heads,
+            head_dim: cfg.head_dim,
         })
     }
 
@@ -124,17 +135,23 @@ impl Attention {
         let v = self.v_proj.forward(x)?;
 
         // Reshape: [B, L, H, D] → [B, H, L, D]
-        let q = q.reshape((b, l, N_HEADS, HEAD_DIM))?.transpose(1, 2)?;
-        let k = k.reshape((b, l, N_KV_HEADS, HEAD_DIM))?.transpose(1, 2)?;
-        let v = v.reshape((b, l, N_KV_HEADS, HEAD_DIM))?.transpose(1, 2)?;
+        let q = q
+            .reshape((b, l, self.n_heads, self.head_dim))?
+            .transpose(1, 2)?;
+        let k = k
+            .reshape((b, l, self.n_kv_heads, self.head_dim))?
+            .transpose(1, 2)?;
+        let v = v
+            .reshape((b, l, self.n_kv_heads, self.head_dim))?
+            .transpose(1, 2)?;
 
         // Per-head RMSNorm on Q and K
         let q_flat = q.flatten(0, 2)?; // [B*H*L, D]
         let k_flat = k.flatten(0, 2)?;
         let q_flat = self.q_norm.forward(&q_flat)?;
         let k_flat = self.k_norm.forward(&k_flat)?;
-        let q = q_flat.reshape((b, N_HEADS, l, HEAD_DIM))?;
-        let k = k_flat.reshape((b, N_KV_HEADS, l, HEAD_DIM))?;
+        let q = q_flat.reshape((b, self.n_heads, l, self.head_dim))?;
+        let k = k_flat.reshape((b, self.n_kv_heads, l, self.head_dim))?;
 
         // RoPE
         let (q, k) = rotary.apply(&q, &k, offset)?;
@@ -143,7 +160,7 @@ impl Attention {
         let (k, v) = self.kv_cache.append(&k, &v)?;
 
         // GQA: repeat KV heads
-        let n_groups = N_HEADS / N_KV_HEADS;
+        let n_groups = self.n_heads / self.n_kv_heads;
         let k = if n_groups > 1 {
             let (b_sz, n_kv, seq, hd) = k.dims4()?;
             Tensor::cat(&vec![&k; n_groups], 2)?
@@ -162,7 +179,7 @@ impl Attention {
         };
 
         // Attention
-        let scale = 1.0 / (HEAD_DIM as f64).sqrt();
+        let scale = 1.0 / (self.head_dim as f64).sqrt();
         let mut scores = (q.matmul(&k.transpose(2, 3)?)? * scale)?;
         if let Some(m) = mask {
             scores = scores.broadcast_add(m)?;
@@ -172,7 +189,7 @@ impl Attention {
 
         // Merge heads
         ctx.transpose(1, 2)?
-            .reshape((b, l, N_HEADS * HEAD_DIM))?
+            .reshape((b, l, self.n_heads * self.head_dim))?
             .apply(&self.o_proj)
     }
 
@@ -190,21 +207,21 @@ struct Mlp {
 }
 
 impl Mlp {
-    fn load(vb: VarBuilder) -> Result<Self> {
+    fn load(vb: VarBuilder, cfg: &DecoderConfig) -> Result<Self> {
         Ok(Self {
             gate_proj: LinearLayer::from_linear(linear_no_bias(
-                HIDDEN_SIZE,
-                INTERMEDIATE,
+                cfg.hidden_size,
+                cfg.intermediate,
                 vb.pp("gate_proj"),
             )?),
             up_proj: LinearLayer::from_linear(linear_no_bias(
-                HIDDEN_SIZE,
-                INTERMEDIATE,
+                cfg.hidden_size,
+                cfg.intermediate,
                 vb.pp("up_proj"),
             )?),
             down_proj: LinearLayer::from_linear(linear_no_bias(
-                INTERMEDIATE,
-                HIDDEN_SIZE,
+                cfg.intermediate,
+                cfg.hidden_size,
                 vb.pp("down_proj"),
             )?),
         })
@@ -237,27 +254,36 @@ struct DecoderLayer {
 }
 
 impl DecoderLayer {
-    fn load(vb: VarBuilder) -> Result<Self> {
+    fn load(vb: VarBuilder, cfg: &DecoderConfig) -> Result<Self> {
         Ok(Self {
-            self_attn: Attention::load(vb.pp("self_attn"))?,
-            mlp: Mlp::load(vb.pp("mlp"))?,
-            input_layernorm: candle_nn::rms_norm(HIDDEN_SIZE, RMS_EPS, vb.pp("input_layernorm"))?,
+            self_attn: Attention::load(vb.pp("self_attn"), cfg)?,
+            mlp: Mlp::load(vb.pp("mlp"), cfg)?,
+            input_layernorm: candle_nn::rms_norm(
+                cfg.hidden_size,
+                cfg.rms_eps,
+                vb.pp("input_layernorm"),
+            )?,
             post_attention_layernorm: candle_nn::rms_norm(
-                HIDDEN_SIZE,
-                RMS_EPS,
+                cfg.hidden_size,
+                cfg.rms_eps,
                 vb.pp("post_attention_layernorm"),
             )?,
         })
     }
 
-    fn load_gguf(loader: &mut GgufLoader, prefix: &str) -> AnyResult<Self> {
+    fn load_gguf(loader: &mut GgufLoader, prefix: &str, cfg: &DecoderConfig) -> AnyResult<Self> {
         Ok(Self {
-            self_attn: Attention::load_gguf(loader, &format!("{prefix}.self_attn"))?,
+            self_attn: Attention::load_gguf(loader, &format!("{prefix}.self_attn"), cfg)?,
             mlp: Mlp::load_gguf(loader, &format!("{prefix}.mlp"))?,
-            input_layernorm: load_rms_norm(loader, &format!("{prefix}.input_layernorm"))?,
+            input_layernorm: load_rms_norm(
+                loader,
+                &format!("{prefix}.input_layernorm"),
+                cfg.rms_eps,
+            )?,
             post_attention_layernorm: load_rms_norm(
                 loader,
                 &format!("{prefix}.post_attention_layernorm"),
+                cfg.rms_eps,
             )?,
         })
     }
@@ -295,23 +321,23 @@ pub struct Decoder {
 }
 
 impl Decoder {
-    pub fn load(vb: VarBuilder, device: &Device) -> Result<Self> {
+    pub fn load(vb: VarBuilder, device: &Device, cfg: &DecoderConfig) -> Result<Self> {
         let vb_model = vb.pp("model");
         let embed_tokens =
-            candle_nn::embedding(VOCAB_SIZE, HIDDEN_SIZE, vb_model.pp("embed_tokens"))?;
+            candle_nn::embedding(cfg.vocab_size, cfg.hidden_size, vb_model.pp("embed_tokens"))?;
 
-        let mut layers = Vec::with_capacity(N_LAYERS);
+        let mut layers = Vec::with_capacity(cfg.n_layers);
         let vb_l = vb_model.pp("layers");
-        for i in 0..N_LAYERS {
-            layers.push(DecoderLayer::load(vb_l.pp(i))?);
+        for i in 0..cfg.n_layers {
+            layers.push(DecoderLayer::load(vb_l.pp(i), cfg)?);
         }
 
-        let norm = candle_nn::rms_norm(HIDDEN_SIZE, RMS_EPS, vb_model.pp("norm"))?;
+        let norm = candle_nn::rms_norm(cfg.hidden_size, cfg.rms_eps, vb_model.pp("norm"))?;
 
         // Tied embeddings: lm_head shares weights with embed_tokens
         let lm_head = OutputProjection::Tensor(embed_tokens.embeddings().clone());
 
-        let rotary = RotaryEmbedding::new(vb.dtype(), device)?;
+        let rotary = RotaryEmbedding::new(vb.dtype(), device, cfg)?;
 
         Ok(Self {
             embed_tokens,
@@ -324,28 +350,33 @@ impl Decoder {
         })
     }
 
-    pub fn load_gguf(loader: &mut GgufLoader, device: &Device) -> AnyResult<Self> {
+    pub fn load_gguf(
+        loader: &mut GgufLoader,
+        device: &Device,
+        cfg: &DecoderConfig,
+    ) -> AnyResult<Self> {
         let embed_tokens = Embedding::new(
             loader.embedding_tensor("thinker.model.embed_tokens.weight")?,
-            HIDDEN_SIZE,
+            cfg.hidden_size,
         );
 
-        let mut layers = Vec::with_capacity(N_LAYERS);
-        for i in 0..N_LAYERS {
+        let mut layers = Vec::with_capacity(cfg.n_layers);
+        for i in 0..cfg.n_layers {
             layers.push(DecoderLayer::load_gguf(
                 loader,
                 &format!("thinker.model.layers.{i}"),
+                cfg,
             )?);
         }
 
-        let norm = load_rms_norm(loader, "thinker.model.norm")?;
+        let norm = load_rms_norm(loader, "thinker.model.norm", cfg.rms_eps)?;
         let lm_head = if loader.has_tensor("thinker.model.lm_head.weight") {
             OutputProjection::Quantized(loader.qmatmul("thinker.model.lm_head.weight")?)
         } else {
             OutputProjection::Tensor(embed_tokens.embeddings().clone())
         };
 
-        let rotary = RotaryEmbedding::new(DType::F32, device)?;
+        let rotary = RotaryEmbedding::new(DType::F32, device, cfg)?;
 
         Ok(Self {
             embed_tokens,
@@ -441,9 +472,9 @@ fn load_quantized_linear(loader: &mut GgufLoader, prefix: &str) -> AnyResult<Lin
     ))
 }
 
-fn load_rms_norm(loader: &mut GgufLoader, prefix: &str) -> AnyResult<RmsNorm> {
+fn load_rms_norm(loader: &mut GgufLoader, prefix: &str, eps: f64) -> AnyResult<RmsNorm> {
     Ok(RmsNorm::new(
         loader.tensor_f32(&format!("{prefix}.weight"))?,
-        RMS_EPS,
+        eps,
     ))
 }

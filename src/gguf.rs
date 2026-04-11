@@ -273,6 +273,7 @@ fn copy_tokenizer_files(src_dir: &Path, dst_dir: &Path) -> Result<()> {
         "tokenizer_config.json",
         "vocab.json",
         "merges.txt",
+        "config.json",
     ] {
         let src = src_dir.join(file_name);
         if src.exists() {

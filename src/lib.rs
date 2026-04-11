@@ -1,6 +1,6 @@
 pub mod audio;
-mod decoder;
-mod encoder;
+pub(crate) mod decoder;
+pub(crate) mod encoder;
 mod gguf;
 mod layers;
 pub mod tokenizer;
@@ -87,6 +87,72 @@ pub fn parse_device(s: &str) -> Result<Device> {
 
 pub const DEFAULT_MODEL_ID: &str = "Qwen/Qwen3-ASR-0.6B";
 
+use decoder::DecoderConfig;
+use encoder::EncoderConfig;
+
+/// Load model config from config.json in the model directory.
+fn load_model_config(model_dir: &Path) -> Result<(EncoderConfig, DecoderConfig)> {
+    let config_path = model_dir.join("config.json");
+    let json_str = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("Failed to read {:?}", config_path))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&json_str).with_context(|| "Failed to parse config.json")?;
+
+    let audio = &json["thinker_config"]["audio_config"];
+    let text = &json["thinker_config"]["text_config"];
+
+    let d_model = audio["d_model"]
+        .as_u64()
+        .context("Missing audio_config.d_model")? as usize;
+    let n_heads = audio["encoder_attention_heads"]
+        .as_u64()
+        .context("Missing audio_config.encoder_attention_heads")? as usize;
+
+    let enc_config = EncoderConfig {
+        d_model,
+        n_layers: audio["encoder_layers"]
+            .as_u64()
+            .context("Missing audio_config.encoder_layers")? as usize,
+        n_heads,
+        head_dim: d_model / n_heads,
+        ffn_dim: audio["encoder_ffn_dim"]
+            .as_u64()
+            .context("Missing audio_config.encoder_ffn_dim")? as usize,
+        output_dim: audio["output_dim"]
+            .as_u64()
+            .context("Missing audio_config.output_dim")? as usize,
+    };
+
+    let dec_config = DecoderConfig {
+        hidden_size: text["hidden_size"]
+            .as_u64()
+            .context("Missing text_config.hidden_size")? as usize,
+        n_layers: text["num_hidden_layers"]
+            .as_u64()
+            .context("Missing text_config.num_hidden_layers")? as usize,
+        n_heads: text["num_attention_heads"]
+            .as_u64()
+            .context("Missing text_config.num_attention_heads")? as usize,
+        n_kv_heads: text["num_key_value_heads"]
+            .as_u64()
+            .context("Missing text_config.num_key_value_heads")? as usize,
+        head_dim: text["head_dim"].as_u64().unwrap_or(128) as usize,
+        intermediate: text["intermediate_size"]
+            .as_u64()
+            .context("Missing text_config.intermediate_size")? as usize,
+        vocab_size: text["vocab_size"]
+            .as_u64()
+            .context("Missing text_config.vocab_size")? as usize,
+        rope_theta: text["rope_theta"].as_f64().unwrap_or(1_000_000.0),
+        rms_eps: text["rms_norm_eps"].as_f64().unwrap_or(1e-6),
+        max_seq_len: text["max_position_embeddings"]
+            .as_u64()
+            .unwrap_or(65536) as usize,
+    };
+
+    Ok((enc_config, dec_config))
+}
+
 // Special token IDs
 const TOKEN_IM_START: u32 = 151644;
 const TOKEN_IM_END: u32 = 151645;
@@ -157,13 +223,18 @@ impl QwenAsr {
                 safetensors_paths,
                 model_dir,
             } => {
+                let (enc_cfg, dec_cfg) = load_model_config(&model_dir)?;
                 let vb = unsafe {
                     VarBuilder::from_mmaped_safetensors(&safetensors_paths, DType::F32, device)?
                 };
 
-                let encoder = encoder::AudioEncoder::load(vb.pp("thinker.audio_tower"), device)?;
+                let encoder = encoder::AudioEncoder::load(
+                    vb.pp("thinker.audio_tower"),
+                    device,
+                    &enc_cfg,
+                )?;
                 let tokenizer = tokenizer::Tokenizer::load(&model_dir)?;
-                let decoder = decoder::Decoder::load(vb.pp("thinker"), device)?;
+                let decoder = decoder::Decoder::load(vb.pp("thinker"), device, &dec_cfg)?;
 
                 Ok(Self {
                     encoder,
@@ -175,10 +246,14 @@ impl QwenAsr {
                 gguf_path,
                 model_dir,
             } => {
+                let (enc_cfg, dec_cfg) = load_model_config(&model_dir)?;
                 let mut loader = gguf::GgufLoader::open(&gguf_path, device)?;
-                let encoder = encoder::AudioEncoder::load_gguf(&mut loader, device)?;
+
+                let encoder =
+                    encoder::AudioEncoder::load_gguf(&mut loader, device, &enc_cfg)?;
                 let tokenizer = tokenizer::Tokenizer::load(&model_dir)?;
-                let decoder = decoder::Decoder::load_gguf(&mut loader, device)?;
+                let decoder =
+                    decoder::Decoder::load_gguf(&mut loader, device, &dec_cfg)?;
                 Ok(Self {
                     encoder,
                     decoder,
@@ -443,6 +518,10 @@ fn download_remote_tokenizer_files(repo: &ApiRepo, remote_files: &BTreeSet<Strin
             .context("Failed to download vocab.json")?;
         repo.get("merges.txt")
             .context("Failed to download merges.txt")?;
+    }
+    if remote_files.contains("config.json") {
+        repo.get("config.json")
+            .context("Failed to download config.json")?;
     }
 
     if has_tokenizer_json || (has_vocab_json && has_merges_txt) {
