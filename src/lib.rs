@@ -246,17 +246,8 @@ impl QwenAsr {
                 gguf_path,
                 model_dir,
             } => {
+                let (enc_cfg, dec_cfg) = load_model_config(&model_dir)?;
                 let mut loader = gguf::GgufLoader::open(&gguf_path, device)?;
-
-                // Try config.json first, fall back to inferring from GGUF tensor shapes
-                let (enc_cfg, dec_cfg) =
-                    if model_dir.join("config.json").exists() {
-                        load_model_config(&model_dir)?
-                    } else {
-                        let enc_cfg = loader.infer_encoder_config()?;
-                        let dec_cfg = loader.infer_decoder_config()?;
-                        (enc_cfg, dec_cfg)
-                    };
 
                 let encoder =
                     encoder::AudioEncoder::load_gguf(&mut loader, device, &enc_cfg)?;

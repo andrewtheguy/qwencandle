@@ -76,9 +76,6 @@ pub struct GgufLoader {
     device: Device,
 }
 
-use crate::decoder::DecoderConfig;
-use crate::encoder::EncoderConfig;
-
 impl GgufLoader {
     pub fn open(path: &Path, device: &Device) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("Failed to open {:?}", path))?;
@@ -133,80 +130,6 @@ impl GgufLoader {
         self.content
             .tensor(&mut self.reader, name, &self.device)
             .with_context(|| format!("Failed to load tensor {name} from GGUF"))
-    }
-
-    /// Get the shape of a tensor from GGUF metadata without loading it.
-    fn tensor_shape_1d(&self, name: &str) -> Result<usize> {
-        let info = self
-            .content
-            .tensor_infos
-            .get(name)
-            .with_context(|| format!("Tensor {name} not found in GGUF"))?;
-        let dims = info.shape.dims();
-        if dims.len() != 1 {
-            anyhow::bail!(
-                "Expected 1D tensor for {name}, got shape {:?}",
-                info.shape
-            );
-        }
-        Ok(dims[0])
-    }
-
-    /// Count tensors matching a prefix+suffix pattern (for counting layers).
-    fn count_matching(&self, prefix: &str, suffix: &str) -> usize {
-        self.content
-            .tensor_infos
-            .keys()
-            .filter(|name| name.starts_with(prefix) && name.ends_with(suffix))
-            .count()
-    }
-
-    /// Infer encoder config from GGUF tensor shapes.
-    pub fn infer_encoder_config(&self) -> Result<EncoderConfig> {
-        let d_model = self.tensor_shape_1d("thinker.audio_tower.ln_post.weight")?;
-        let ffn_dim = self.tensor_shape_1d("thinker.audio_tower.layers.0.fc1.bias")?;
-        let output_dim = self.tensor_shape_1d("thinker.audio_tower.proj2.bias")?;
-        let n_layers = self.count_matching(
-            "thinker.audio_tower.layers.",
-            ".self_attn_layer_norm.weight",
-        );
-        let head_dim = 64; // constant across all known Qwen3-ASR model sizes
-        let n_heads = d_model / head_dim;
-
-        Ok(EncoderConfig {
-            d_model,
-            n_layers,
-            n_heads,
-            head_dim,
-            ffn_dim,
-            output_dim,
-        })
-    }
-
-    /// Infer decoder config from GGUF tensor shapes.
-    pub fn infer_decoder_config(&self) -> Result<DecoderConfig> {
-        let hidden_size = self.tensor_shape_1d("thinker.model.norm.weight")?;
-        let n_layers =
-            self.count_matching("thinker.model.layers.", ".input_layernorm.weight");
-        let head_dim = self.tensor_shape_1d("thinker.model.layers.0.self_attn.q_norm.weight")?;
-        // n_heads and n_kv_heads: same (16 and 8) across all known Qwen3-ASR sizes
-        let n_heads = 16;
-        let n_kv_heads = 8;
-        // intermediate = 3 * hidden_size for all known Qwen3-ASR sizes
-        let intermediate = 3 * hidden_size;
-
-        Ok(DecoderConfig {
-            hidden_size,
-            n_layers,
-            n_heads,
-            n_kv_heads,
-            head_dim,
-            intermediate,
-            vocab_size: 151936,
-            rope_theta: 1_000_000.0,
-            rms_eps: 1e-6,
-            max_seq_len: 65536,
-        })
     }
 }
 
