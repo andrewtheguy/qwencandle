@@ -5,46 +5,71 @@ use anyhow::Result as AnyResult;
 use candle_core::{Device, Module, Result, Tensor};
 use candle_nn::{Conv2d, Conv2dConfig, LayerNorm, LayerNormConfig, Linear, VarBuilder};
 
-// 0.6B encoder config
-const D_MODEL: usize = 896;
-const N_LAYERS: usize = 18;
-const N_HEADS: usize = 14;
-const HEAD_DIM: usize = D_MODEL / N_HEADS; // 64
-const FFN_DIM: usize = 3584;
-const OUTPUT_DIM: usize = 1024;
+// Constants shared across all model sizes
 const DOWNSAMPLE_HIDDEN: usize = 480;
 const N_WINDOW: usize = 50;
 const N_WINDOW_INFER: usize = 800;
 const CHUNK_SIZE: usize = N_WINDOW * 2; // 100 mel frames per chunk
 const NUM_MEL_BINS: usize = 128;
 
+#[derive(Clone)]
+pub struct EncoderConfig {
+    pub d_model: usize,
+    pub n_layers: usize,
+    pub n_heads: usize,
+    pub head_dim: usize,
+    pub ffn_dim: usize,
+    pub output_dim: usize,
+}
+
 struct EncoderAttention {
     q_proj: LinearLayer,
     k_proj: LinearLayer,
     v_proj: LinearLayer,
     out_proj: LinearLayer,
+    n_heads: usize,
+    head_dim: usize,
+    d_model: usize,
 }
 
 impl EncoderAttention {
-    fn load(vb: VarBuilder) -> Result<Self> {
+    fn load(vb: VarBuilder, cfg: &EncoderConfig) -> Result<Self> {
         Ok(Self {
-            q_proj: LinearLayer::from_linear(candle_nn::linear(D_MODEL, D_MODEL, vb.pp("q_proj"))?),
-            k_proj: LinearLayer::from_linear(candle_nn::linear(D_MODEL, D_MODEL, vb.pp("k_proj"))?),
-            v_proj: LinearLayer::from_linear(candle_nn::linear(D_MODEL, D_MODEL, vb.pp("v_proj"))?),
+            q_proj: LinearLayer::from_linear(candle_nn::linear(
+                cfg.d_model,
+                cfg.d_model,
+                vb.pp("q_proj"),
+            )?),
+            k_proj: LinearLayer::from_linear(candle_nn::linear(
+                cfg.d_model,
+                cfg.d_model,
+                vb.pp("k_proj"),
+            )?),
+            v_proj: LinearLayer::from_linear(candle_nn::linear(
+                cfg.d_model,
+                cfg.d_model,
+                vb.pp("v_proj"),
+            )?),
             out_proj: LinearLayer::from_linear(candle_nn::linear(
-                D_MODEL,
-                D_MODEL,
+                cfg.d_model,
+                cfg.d_model,
                 vb.pp("out_proj"),
             )?),
+            n_heads: cfg.n_heads,
+            head_dim: cfg.head_dim,
+            d_model: cfg.d_model,
         })
     }
 
-    fn load_gguf(loader: &mut GgufLoader, prefix: &str) -> AnyResult<Self> {
+    fn load_gguf(loader: &mut GgufLoader, prefix: &str, cfg: &EncoderConfig) -> AnyResult<Self> {
         Ok(Self {
             q_proj: load_quantized_linear(loader, &format!("{prefix}.q_proj"), true)?,
             k_proj: load_quantized_linear(loader, &format!("{prefix}.k_proj"), true)?,
             v_proj: load_quantized_linear(loader, &format!("{prefix}.v_proj"), true)?,
             out_proj: load_quantized_linear(loader, &format!("{prefix}.out_proj"), true)?,
+            n_heads: cfg.n_heads,
+            head_dim: cfg.head_dim,
+            d_model: cfg.d_model,
         })
     }
 
@@ -57,22 +82,22 @@ impl EncoderAttention {
 
         // Reshape to [1, n_heads, seq, head_dim], ensure contiguous for Metal
         let q = q
-            .reshape((seq_len, N_HEADS, HEAD_DIM))?
+            .reshape((seq_len, self.n_heads, self.head_dim))?
             .transpose(0, 1)?
             .unsqueeze(0)?
             .contiguous()?;
         let k = k
-            .reshape((seq_len, N_HEADS, HEAD_DIM))?
+            .reshape((seq_len, self.n_heads, self.head_dim))?
             .transpose(0, 1)?
             .unsqueeze(0)?
             .contiguous()?;
         let v = v
-            .reshape((seq_len, N_HEADS, HEAD_DIM))?
+            .reshape((seq_len, self.n_heads, self.head_dim))?
             .transpose(0, 1)?
             .unsqueeze(0)?
             .contiguous()?;
 
-        let scale = 1.0 / (HEAD_DIM as f64).sqrt();
+        let scale = 1.0 / (self.head_dim as f64).sqrt();
         let scores = (q.matmul(&k.transpose(2, 3)?.contiguous()?)? * scale)?;
         let probs = candle_nn::ops::softmax_last_dim(&scores)?;
         let ctx = probs.matmul(&v)?; // [1, n_heads, seq, head_dim]
@@ -81,7 +106,7 @@ impl EncoderAttention {
             .squeeze(0)?
             .transpose(0, 1)?
             .contiguous()?
-            .reshape((seq_len, D_MODEL))?;
+            .reshape((seq_len, self.d_model))?;
         self.out_proj.forward(&out)
     }
 }
@@ -95,28 +120,36 @@ struct EncoderLayer {
 }
 
 impl EncoderLayer {
-    fn load(vb: VarBuilder) -> Result<Self> {
+    fn load(vb: VarBuilder, cfg: &EncoderConfig) -> Result<Self> {
         let ln_cfg = LayerNormConfig {
             eps: 1e-5,
             remove_mean: true,
             affine: true,
         };
         Ok(Self {
-            self_attn: EncoderAttention::load(vb.pp("self_attn"))?,
+            self_attn: EncoderAttention::load(vb.pp("self_attn"), cfg)?,
             self_attn_layer_norm: candle_nn::layer_norm(
-                D_MODEL,
+                cfg.d_model,
                 ln_cfg,
                 vb.pp("self_attn_layer_norm"),
             )?,
-            fc1: LinearLayer::from_linear(candle_nn::linear(D_MODEL, FFN_DIM, vb.pp("fc1"))?),
-            fc2: LinearLayer::from_linear(candle_nn::linear(FFN_DIM, D_MODEL, vb.pp("fc2"))?),
-            final_layer_norm: candle_nn::layer_norm(D_MODEL, ln_cfg, vb.pp("final_layer_norm"))?,
+            fc1: LinearLayer::from_linear(candle_nn::linear(
+                cfg.d_model,
+                cfg.ffn_dim,
+                vb.pp("fc1"),
+            )?),
+            fc2: LinearLayer::from_linear(candle_nn::linear(
+                cfg.ffn_dim,
+                cfg.d_model,
+                vb.pp("fc2"),
+            )?),
+            final_layer_norm: candle_nn::layer_norm(cfg.d_model, ln_cfg, vb.pp("final_layer_norm"))?,
         })
     }
 
-    fn load_gguf(loader: &mut GgufLoader, prefix: &str) -> AnyResult<Self> {
+    fn load_gguf(loader: &mut GgufLoader, prefix: &str, cfg: &EncoderConfig) -> AnyResult<Self> {
         Ok(Self {
-            self_attn: EncoderAttention::load_gguf(loader, &format!("{prefix}.self_attn"))?,
+            self_attn: EncoderAttention::load_gguf(loader, &format!("{prefix}.self_attn"), cfg)?,
             self_attn_layer_norm: load_layer_norm(
                 loader,
                 &format!("{prefix}.self_attn_layer_norm"),
@@ -166,10 +199,11 @@ pub struct AudioEncoder {
     proj1: LinearLayer,
     proj2: LinearLayer,
     device: Device,
+    d_model: usize,
 }
 
 impl AudioEncoder {
-    pub fn load(vb: VarBuilder, device: &Device) -> Result<Self> {
+    pub fn load(vb: VarBuilder, device: &Device, cfg: &EncoderConfig) -> Result<Self> {
         let conv_cfg = Conv2dConfig {
             stride: 2,
             padding: 1,
@@ -192,16 +226,16 @@ impl AudioEncoder {
         )?;
         let conv_out = LinearLayer::from_linear(Linear::new(
             vb.get(
-                (D_MODEL, DOWNSAMPLE_HIDDEN * NUM_MEL_BINS / 8),
+                (cfg.d_model, DOWNSAMPLE_HIDDEN * NUM_MEL_BINS / 8),
                 "conv_out.weight",
             )?,
             None,
         ));
 
-        let mut layers = Vec::with_capacity(N_LAYERS);
+        let mut layers = Vec::with_capacity(cfg.n_layers);
         let vb_l = vb.pp("layers");
-        for i in 0..N_LAYERS {
-            layers.push(EncoderLayer::load(vb_l.pp(i))?);
+        for i in 0..cfg.n_layers {
+            layers.push(EncoderLayer::load(vb_l.pp(i), cfg)?);
         }
 
         let ln_cfg = LayerNormConfig {
@@ -209,10 +243,17 @@ impl AudioEncoder {
             remove_mean: true,
             affine: true,
         };
-        let ln_post = candle_nn::layer_norm(D_MODEL, ln_cfg, vb.pp("ln_post"))?;
-        let proj1 = LinearLayer::from_linear(candle_nn::linear(D_MODEL, D_MODEL, vb.pp("proj1"))?);
-        let proj2 =
-            LinearLayer::from_linear(candle_nn::linear(D_MODEL, OUTPUT_DIM, vb.pp("proj2"))?);
+        let ln_post = candle_nn::layer_norm(cfg.d_model, ln_cfg, vb.pp("ln_post"))?;
+        let proj1 = LinearLayer::from_linear(candle_nn::linear(
+            cfg.d_model,
+            cfg.d_model,
+            vb.pp("proj1"),
+        )?);
+        let proj2 = LinearLayer::from_linear(candle_nn::linear(
+            cfg.d_model,
+            cfg.output_dim,
+            vb.pp("proj2"),
+        )?);
 
         Ok(Self {
             conv2d1,
@@ -224,10 +265,15 @@ impl AudioEncoder {
             proj1,
             proj2,
             device: device.clone(),
+            d_model: cfg.d_model,
         })
     }
 
-    pub fn load_gguf(loader: &mut GgufLoader, device: &Device) -> AnyResult<Self> {
+    pub fn load_gguf(
+        loader: &mut GgufLoader,
+        device: &Device,
+        cfg: &EncoderConfig,
+    ) -> AnyResult<Self> {
         let conv_cfg = Conv2dConfig {
             stride: 2,
             padding: 1,
@@ -238,11 +284,12 @@ impl AudioEncoder {
         let conv2d3 = load_conv2d(loader, "thinker.audio_tower.conv2d3", conv_cfg)?;
         let conv_out = load_quantized_linear(loader, "thinker.audio_tower.conv_out", false)?;
 
-        let mut layers = Vec::with_capacity(N_LAYERS);
-        for i in 0..N_LAYERS {
+        let mut layers = Vec::with_capacity(cfg.n_layers);
+        for i in 0..cfg.n_layers {
             layers.push(EncoderLayer::load_gguf(
                 loader,
                 &format!("thinker.audio_tower.layers.{i}"),
+                cfg,
             )?);
         }
 
@@ -260,6 +307,7 @@ impl AudioEncoder {
             proj1,
             proj2,
             device: device.clone(),
+            d_model: cfg.d_model,
         })
     }
 
@@ -304,7 +352,7 @@ impl AudioEncoder {
 
         // ── Per-chunk sinusoidal position embeddings ──
         let tokens_per_chunk = chunk_outputs[0].dim(0)?;
-        let pos_emb = sinusoidal_position_embedding(tokens_per_chunk, D_MODEL, &self.device)?;
+        let pos_emb = sinusoidal_position_embedding(tokens_per_chunk, self.d_model, &self.device)?;
 
         let mut x = x;
         let mut offset = 0;
