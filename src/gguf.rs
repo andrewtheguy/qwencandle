@@ -264,6 +264,7 @@ fn is_f32_tensor(name: &str) -> bool {
         || name.ends_with(".norm.weight")
         || name.ends_with(".ln_post.weight")
         || name.contains("layer_norm")
+        || name.contains("layernorm")
 }
 
 fn copy_tokenizer_files(src_dir: &Path, dst_dir: &Path) -> Result<()> {
