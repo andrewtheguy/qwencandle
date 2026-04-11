@@ -310,7 +310,13 @@ fn resolve_model(model_id: &str) -> Result<ModelSource> {
     if is_gguf_file(&local) {
         let model_dir = local
             .parent()
-            .map(Path::to_path_buf)
+            .map(|parent| {
+                if parent.as_os_str().is_empty() {
+                    PathBuf::from(".")
+                } else {
+                    parent.to_path_buf()
+                }
+            })
             .unwrap_or_else(|| PathBuf::from("."));
         return Ok(ModelSource::Gguf {
             gguf_path: local,
