@@ -94,7 +94,7 @@ jobs:
             extra-features: "metal,accelerate"
           - arch: amd64
             runs-on: windows-latest
-            extra-features: ""
+            extra-features: "mkl"
 
     runs-on: ${{ matrix.runs-on }}
 
