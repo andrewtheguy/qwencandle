@@ -1,6 +1,6 @@
 [package]
 name = "qwencandle"
-version = "0.0.10"
+version = "0.0.11"
 edition = "2021"
 
 [lib]
@@ -24,3 +24,7 @@ cuda = ["candle-core/cuda", "candle-nn/cuda"]
 accelerate = ["candle-nn/accelerate"]
 mkl = ["candle-core/mkl", "candle-nn/mkl"]
 python = ["dep:pyo3", "dep:numpy"]
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
