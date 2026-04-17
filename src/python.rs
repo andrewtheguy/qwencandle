@@ -51,6 +51,8 @@ impl QwenAsr {
         let context = context.map(|s| s.to_string());
 
         py.detach(|| {
+            let check_signals =
+                || Python::attach(|py| py.check_signals()).map_err(anyhow::Error::from);
             self.inner
                 .lock()
                 .unwrap()
@@ -60,8 +62,12 @@ impl QwenAsr {
                     context.as_deref(),
                     repetition_threshold,
                     max_new_tokens,
+                    Some(&check_signals),
                 )
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+                .map_err(|e| match e.downcast::<PyErr>() {
+                    Ok(py_err) => py_err,
+                    Err(other) => PyRuntimeError::new_err(other.to_string()),
+                })
         })
     }
 }
