@@ -1,6 +1,6 @@
 # qwencandle
 
-Qwen3-ASR-0.6B speech-to-text inference in Rust, built on [Candle](https://github.com/huggingface/candle).
+Qwen3-ASR speech-to-text inference in Rust, built on [Candle](https://github.com/huggingface/candle). Supports both `Qwen/Qwen3-ASR-0.6B` (default) and `Qwen/Qwen3-ASR-1.7B`.
 
 ## Motivation
 
@@ -51,6 +51,8 @@ There are two model flows:
 --help             Show help
 ```
 
+Pass `--model Qwen/Qwen3-ASR-1.7B` to use the larger 1.7B checkpoint instead.
+
 ### Quantize
 
 Create a persistent quantized `GGUF` model directory:
@@ -79,7 +81,9 @@ Supported quantization dtypes:
 - Recommended for this model: `q8_0`, `q5_0`, `q4_0`
 - Also supported by the CLI: `q4k`, `q5k`, `q6k`, `q8k`
 
-Important: the `K` formats can fail on this model. Some Qwen3-ASR-0.6B linear weights have last dimension `896`, and Candle requires the quantized tensor's last dimension to be divisible by the format block size. The exporter fails explicitly instead of silently falling back. For example:
+Quantization works for both `Qwen/Qwen3-ASR-0.6B` and `Qwen/Qwen3-ASR-1.7B`. Just pass the desired model ID to `--src`.
+
+Important: the `K` formats can fail depending on the model's hidden dimensions. Some `Qwen3-ASR-0.6B` linear weights have last dimension `896`, and Candle requires the quantized tensor's last dimension to be divisible by the format block size. The exporter fails explicitly instead of silently falling back. For example:
 
 ```
 qwencandle quantize --src Qwen/Qwen3-ASR-0.6B --dst ./bad --dtype q6k
@@ -174,6 +178,8 @@ To use a locally downloaded model instead of auto-downloading:
 huggingface-cli download Qwen/Qwen3-ASR-0.6B --local-dir qwen3-asr-0.6b
 ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | ./target/release/qwencandle --model ./qwen3-asr-0.6b
 ```
+
+Swap in `Qwen/Qwen3-ASR-1.7B` and a matching local dir to run the 1.7B checkpoint instead.
 
 To use a local quantized GGUF directory:
 

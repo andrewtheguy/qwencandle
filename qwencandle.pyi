@@ -1,7 +1,9 @@
 """Python bindings for Qwen3-ASR inference via Candle.
 
+Supports `Qwen/Qwen3-ASR-0.6B` (default) and `Qwen/Qwen3-ASR-1.7B`.
+
 `model_id` accepts:
-- a HuggingFace model ID like `"Qwen/Qwen3-ASR-0.6B"`
+- a HuggingFace model ID like `"Qwen/Qwen3-ASR-0.6B"` or `"Qwen/Qwen3-ASR-1.7B"`
 - a local safetensors model directory
 - a local quantized GGUF directory containing `model.gguf`
 - a direct local `.gguf` file path when the tokenizer files are alongside it
