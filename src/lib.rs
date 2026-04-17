@@ -270,6 +270,10 @@ impl QwenAsr {
     /// The Qwen3-ASR reference uses 20.
     ///
     /// `max_new_tokens`: maximum tokens to generate (default: 512).
+    ///
+    /// `interrupt`: if `Some`, called once per decoded token. Returning `Err`
+    /// aborts generation and propagates the error. Used by the Python bindings
+    /// to poll `PyErr_CheckSignals` so Ctrl+C can interrupt long transcriptions.
     pub fn transcribe(
         &mut self,
         samples: &[f32],
@@ -277,6 +281,7 @@ impl QwenAsr {
         context: Option<&str>,
         repetition_threshold: Option<usize>,
         max_new_tokens: Option<usize>,
+        interrupt: Option<&dyn Fn() -> Result<()>>,
     ) -> Result<String> {
         // Validate language
         if let Some(lang) = language {
@@ -357,6 +362,9 @@ impl QwenAsr {
         // Autoregressive decode
         let max_new_tokens = max_new_tokens.unwrap_or(512);
         for step in 0..max_new_tokens - 1 {
+            if let Some(check) = interrupt {
+                check()?;
+            }
             if token == TOKEN_ENDOFTEXT || token == TOKEN_IM_END {
                 break;
             }

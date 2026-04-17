@@ -176,7 +176,7 @@ use qwencandle::{QwenAsr, Device, best_device, is_cuda_available, is_metal_avail
 // Auto-detect best device (CUDA > Metal > CPU)
 let device = best_device()?;
 let mut model = QwenAsr::load_on("Qwen/Qwen3-ASR-0.6B", &device)?;
-let text = model.transcribe(&samples, Some("English"), None)?;
+let text = model.transcribe(&samples, Some("English"), None, None, None, None)?;
 
 // Check device availability (like torch.cuda.is_available())
 if is_cuda_available() { /* ... */ }
