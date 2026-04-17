@@ -105,6 +105,18 @@ On Linux x86_64, build with `--features mkl` to enable Intel MKL for significant
 
 On macOS, the `accelerate` feature uses Apple's Accelerate framework for the same purpose.
 
+There is no additional `openblas` feature exposed by this repo or by Candle `0.10.2`. Without MKL or Accelerate, Candle falls back to its own CPU `gemm` implementation.
+
+For Intel Core i5-class CPUs, the next meaningful CPU-only optimization is host-specific code generation. If the machine supports AVX2/FMA/F16C, build with:
+
+```
+RUSTFLAGS="-C target-cpu=native" cargo build --release --features mkl
+```
+
+If you are building on one machine for another, use an explicit CPU target such as `-C target-cpu=haswell` instead of `native`.
+
+This matters especially for quantized `GGUF` CPU inference. Those kernels do not use MKL or Accelerate; Candle only compiles its AVX2 quantized path when the target enables `avx2`, so `target-cpu=native` can help quantized CPU runs even when BLAS does not.
+
 ### Thread count
 
 Without MKL, set `RAYON_NUM_THREADS` to control CPU parallelism for Candle CPU kernels and the mel/STFT preprocessing stage:
@@ -114,6 +126,8 @@ RAYON_NUM_THREADS=4 ffmpeg -i audio.mp3 -ac 1 -ar 16000 -f wav -acodec pcm_f32le
 ```
 
 Defaults to all available cores if unset.
+
+On Intel CPUs with hyper-threading, start by setting `RAYON_NUM_THREADS` to the number of physical cores rather than logical threads, then benchmark from there.
 
 For quantized `GGUF` CPU inference, thread count is also controlled by `RAYON_NUM_THREADS`. The quantized CPU kernels use Candle's Rayon-based path rather than MKL.
 
