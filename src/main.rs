@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use qwencandle::{
-    best_device, parse_device, quantize_to_gguf, Quantization, QwenAsr, DEFAULT_MODEL_ID,
-    DEFAULT_QUANTIZATION, SUPPORTED_LANGUAGES,
+    best_device, parse_device, quantize_to_gguf, LmHeadPolicy, Quantization, QwenAsr,
+    DEFAULT_LM_HEAD_POLICY, DEFAULT_MODEL_ID, DEFAULT_QUANTIZATION, SUPPORTED_LANGUAGES,
 };
 use std::io::Read;
 use std::path::PathBuf;
@@ -11,7 +11,9 @@ fn print_usage() {
     eprintln!(
         "  ffmpeg -i INPUT -ac 1 -ar 16000 -f wav -acodec pcm_f32le - | qwencandle [options]"
     );
-    eprintln!("  qwencandle quantize --src <id-or-path> --dst <dir> [--dtype q8_0]");
+    eprintln!(
+        "  qwencandle quantize --src <id-or-path> --dst <dir> [--dtype q8_0] [--lm-head quantized|tied]"
+    );
     eprintln!();
     eprintln!("Options:");
     eprintln!(
@@ -122,6 +124,7 @@ fn run_quantize(args: &[String]) -> Result<()> {
     let mut src: Option<String> = None;
     let mut dst: Option<PathBuf> = None;
     let mut dtype = DEFAULT_QUANTIZATION;
+    let mut lm_head_policy = DEFAULT_LM_HEAD_POLICY;
 
     let mut i = 0;
     while i < args.len() {
@@ -147,6 +150,13 @@ fn run_quantize(args: &[String]) -> Result<()> {
                 }
                 dtype = args[i].parse::<Quantization>()?;
             }
+            "--lm-head" => {
+                i += 1;
+                if i >= args.len() {
+                    bail!("--lm-head requires a value");
+                }
+                lm_head_policy = args[i].parse::<LmHeadPolicy>()?;
+            }
             "--help" | "-h" => {
                 print_usage();
                 std::process::exit(0);
@@ -162,8 +172,14 @@ fn run_quantize(args: &[String]) -> Result<()> {
     let src = src.context("--src is required")?;
     let dst = dst.context("--dst is required")?;
 
-    eprintln!("Quantizing {} to {:?} with {}...", src, dst, dtype.as_str(),);
-    let gguf_path = quantize_to_gguf(&src, &dst, dtype)?;
+    eprintln!(
+        "Quantizing {} to {:?} with {}, lm_head={}...",
+        src,
+        dst,
+        dtype.as_str(),
+        lm_head_policy.as_str(),
+    );
+    let gguf_path = quantize_to_gguf(&src, &dst, dtype, lm_head_policy)?;
     eprintln!("Wrote {:?}", gguf_path);
     Ok(())
 }
