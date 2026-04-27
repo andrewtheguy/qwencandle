@@ -25,6 +25,14 @@ pub enum Quantization {
 
 pub const DEFAULT_QUANTIZATION: Quantization = Quantization::Q8_0;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LmHeadPolicy {
+    Quantized,
+    Tied,
+}
+
+pub const DEFAULT_LM_HEAD_POLICY: LmHeadPolicy = LmHeadPolicy::Quantized;
+
 impl Quantization {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -66,6 +74,27 @@ impl FromStr for Quantization {
             _ => {
                 bail!("Unknown quantization: {s}. Supported: q4_0, q5_0, q8_0, q4k, q5k, q6k, q8k")
             }
+        }
+    }
+}
+
+impl LmHeadPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Quantized => "quantized",
+            Self::Tied => "tied",
+        }
+    }
+}
+
+impl FromStr for LmHeadPolicy {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "quantized" => Ok(Self::Quantized),
+            "tied" => Ok(Self::Tied),
+            _ => bail!("Unknown lm_head policy: {s}. Supported: quantized, tied"),
         }
     }
 }
@@ -137,6 +166,7 @@ pub fn quantize_to_gguf(
     src_model_id: &str,
     dst_dir: &Path,
     quantization: Quantization,
+    lm_head_policy: LmHeadPolicy,
 ) -> Result<PathBuf> {
     let (safetensors_paths, model_dir) = crate::resolve_safetensors_model(src_model_id)?;
     let tensors = unsafe { MmapedSafetensors::multi(&safetensors_paths)? };
@@ -152,6 +182,9 @@ pub fn quantize_to_gguf(
 
     let mut qtensors = Vec::with_capacity(names.len() + 1);
     for name in &names {
+        if is_runtime_lm_head_weight(name) {
+            continue;
+        }
         let tensor = tensors
             .load(name, &Device::Cpu)
             .with_context(|| format!("Failed to load source tensor {name}"))?;
@@ -162,29 +195,33 @@ pub fn quantize_to_gguf(
         qtensors.push((name.clone(), qtensor));
     }
 
-    let embed_name = "thinker.model.embed_tokens.weight";
-    let embed_tensor = tensors
-        .load(embed_name, &Device::Cpu)
-        .with_context(|| format!("Failed to load source tensor {embed_name}"))?;
-    validate_quantization_target("thinker.model.lm_head.weight", &embed_tensor, quantization)?;
-    let lm_head =
-        QTensor::quantize(&embed_tensor, quantization.ggml_dtype()).with_context(|| {
-            format!(
-                "Failed to quantize {embed_name} as {:?} for lm_head",
-                quantization.ggml_dtype()
-            )
-        })?;
-    qtensors.push(("thinker.model.lm_head.weight".to_string(), lm_head));
+    if lm_head_policy == LmHeadPolicy::Quantized {
+        let embed_name = "thinker.model.embed_tokens.weight";
+        let embed_tensor = tensors
+            .load(embed_name, &Device::Cpu)
+            .with_context(|| format!("Failed to load source tensor {embed_name}"))?;
+        validate_quantization_target(RUNTIME_LM_HEAD_WEIGHT, &embed_tensor, quantization)?;
+        let lm_head =
+            QTensor::quantize(&embed_tensor, quantization.ggml_dtype()).with_context(|| {
+                format!(
+                    "Failed to quantize {embed_name} as {:?} for lm_head",
+                    quantization.ggml_dtype()
+                )
+            })?;
+        qtensors.push((RUNTIME_LM_HEAD_WEIGHT.to_string(), lm_head));
+    }
 
     let alignment = gguf_file::Value::U32(gguf_file::DEFAULT_ALIGNMENT as u32);
     let architecture = gguf_file::Value::String("qwencandle".to_string());
     let model_id = gguf_file::Value::String(src_model_id.to_string());
     let quantized = gguf_file::Value::String(quantization.as_str().to_string());
+    let lm_head_policy_value = gguf_file::Value::String(lm_head_policy.as_str().to_string());
     let metadata = vec![
         ("general.alignment", &alignment),
         ("general.architecture", &architecture),
         ("qwencandle.source_model", &model_id),
         ("qwencandle.quantization", &quantized),
+        ("qwencandle.lm_head_policy", &lm_head_policy_value),
     ];
 
     let tensor_refs: Vec<(&str, &QTensor)> = qtensors
@@ -203,6 +240,12 @@ pub fn quantize_to_gguf(
     Ok(gguf_path)
 }
 
+const RUNTIME_LM_HEAD_WEIGHT: &str = "thinker.model.lm_head.weight";
+
+fn is_runtime_lm_head_weight(name: &str) -> bool {
+    name == RUNTIME_LM_HEAD_WEIGHT
+}
+
 fn export_dtype_for(name: &str, quantization: Quantization) -> GgmlDType {
     if is_quantized_linear_weight(name) {
         quantization.ggml_dtype()
@@ -218,7 +261,7 @@ fn validate_quantization_target(
     tensor: &Tensor,
     quantization: Quantization,
 ) -> Result<()> {
-    if !is_quantized_linear_weight(name) {
+    if !is_quantized_linear_weight(name) && !is_runtime_lm_head_weight(name) {
         return Ok(());
     }
 
@@ -259,7 +302,8 @@ fn is_quantized_linear_weight(name: &str) -> bool {
 }
 
 fn is_f32_tensor(name: &str) -> bool {
-    name.ends_with(".q_norm.weight")
+    name.ends_with(".bias")
+        || name.ends_with(".q_norm.weight")
         || name.ends_with(".k_norm.weight")
         || name.ends_with(".norm.weight")
         || name.ends_with(".ln_post.weight")

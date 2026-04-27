@@ -81,6 +81,18 @@ Supported quantization dtypes:
 - Recommended for this model: `q8_0`, `q5_0`, `q4_0`
 - Also supported by the CLI: `q4k`, `q5k`, `q6k`, `q8k`
 
+Bias tensors are always exported as `F32`; norms and other numerically sensitive scalar tensors also stay in `F32`.
+
+The exporter writes a quantized `lm_head` by default for faster CPU output projection. To omit that duplicate tensor and use the tied embedding weights at runtime:
+
+```
+cargo run --release --features metal -- quantize \
+  --src Qwen/Qwen3-ASR-0.6B \
+  --dst ./qwen3-asr-q8_0_tied \
+  --dtype q8_0 \
+  --lm-head tied
+```
+
 Quantization works for both `Qwen/Qwen3-ASR-0.6B` and `Qwen/Qwen3-ASR-1.7B`. Just pass the desired model ID to `--src`.
 
 Important: the `K` formats can fail depending on the model's hidden dimensions. Some `Qwen3-ASR-0.6B` linear weights have last dimension `896`, and Candle requires the quantized tensor's last dimension to be divisible by the format block size. The exporter fails explicitly instead of silently falling back. For example:

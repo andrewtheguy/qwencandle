@@ -40,7 +40,9 @@ use std::{
 };
 
 pub use candle_core::Device;
-pub use gguf::{quantize_to_gguf, Quantization, DEFAULT_QUANTIZATION};
+pub use gguf::{
+    quantize_to_gguf, LmHeadPolicy, Quantization, DEFAULT_LM_HEAD_POLICY, DEFAULT_QUANTIZATION,
+};
 
 /// Returns true if CUDA support was compiled in and a CUDA device can be created.
 /// Analogous to `torch.cuda.is_available()`.
