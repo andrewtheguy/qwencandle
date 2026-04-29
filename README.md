@@ -78,6 +78,7 @@ The generated directory contains:
 
 Supported quantization dtypes:
 
+- Unquantized: `f16`, `bf16`
 - Recommended for this model: `q8_0`, `q5_0`, `q4_0`
 - Also supported by the CLI: `q4k`, `q5k`, `q6k`, `q8k`
 

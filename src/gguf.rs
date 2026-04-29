@@ -14,6 +14,8 @@ use std::{
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Quantization {
+    F16,
+    BF16,
     Q4_0,
     Q5_0,
     Q8_0,
@@ -36,6 +38,8 @@ pub const DEFAULT_LM_HEAD_POLICY: LmHeadPolicy = LmHeadPolicy::Quantized;
 impl Quantization {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::F16 => "f16",
+            Self::BF16 => "bf16",
             Self::Q4_0 => "q4_0",
             Self::Q5_0 => "q5_0",
             Self::Q8_0 => "q8_0",
@@ -48,6 +52,8 @@ impl Quantization {
 
     pub fn ggml_dtype(self) -> GgmlDType {
         match self {
+            Self::F16 => GgmlDType::F16,
+            Self::BF16 => GgmlDType::BF16,
             Self::Q4_0 => GgmlDType::Q4_0,
             Self::Q5_0 => GgmlDType::Q5_0,
             Self::Q8_0 => GgmlDType::Q8_0,
@@ -64,6 +70,8 @@ impl FromStr for Quantization {
 
     fn from_str(s: &str) -> Result<Self> {
         match s.to_ascii_lowercase().as_str() {
+            "f16" => Ok(Self::F16),
+            "bf16" => Ok(Self::BF16),
             "q4_0" => Ok(Self::Q4_0),
             "q5_0" => Ok(Self::Q5_0),
             "q8_0" => Ok(Self::Q8_0),
@@ -72,7 +80,7 @@ impl FromStr for Quantization {
             "q6k" => Ok(Self::Q6K),
             "q8k" => Ok(Self::Q8K),
             _ => {
-                bail!("Unknown quantization: {s}. Supported: q4_0, q5_0, q8_0, q4k, q5k, q6k, q8k")
+                bail!("Unknown quantization: {s}. Supported: f16, bf16, q4_0, q5_0, q8_0, q4k, q5k, q6k, q8k")
             }
         }
     }
