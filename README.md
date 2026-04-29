@@ -80,7 +80,6 @@ Supported quantization dtypes:
 
 - Unquantized: `f16`, `bf16`
 - Recommended for this model: `q8_0`, `q5_0`, `q4_0`
-- Also supported by the CLI: `q4k`, `q5k`, `q6k`, `q8k`
 
 Bias tensors are always exported as `F32`; norms and other numerically sensitive scalar tensors also stay in `F32`.
 
@@ -95,13 +94,6 @@ cargo run --release --features metal -- quantize \
 ```
 
 Quantization works for both `Qwen/Qwen3-ASR-0.6B` and `Qwen/Qwen3-ASR-1.7B`. Just pass the desired model ID to `--src`.
-
-Important: the `K` formats can fail depending on the model's hidden dimensions. Some `Qwen3-ASR-0.6B` linear weights have last dimension `896`, and Candle requires the quantized tensor's last dimension to be divisible by the format block size. The exporter fails explicitly instead of silently falling back. For example:
-
-```
-qwencandle quantize --src Qwen/Qwen3-ASR-0.6B --dst ./bad --dtype q6k
-# Error: ... last dim 896 is not divisible by block size 256
-```
 
 Important: the default CPU command below does not use the quantized model:
 

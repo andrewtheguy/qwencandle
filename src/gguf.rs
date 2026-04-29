@@ -19,10 +19,6 @@ pub enum Quantization {
     Q4_0,
     Q5_0,
     Q8_0,
-    Q4K,
-    Q5K,
-    Q6K,
-    Q8K,
 }
 
 pub const DEFAULT_QUANTIZATION: Quantization = Quantization::Q8_0;
@@ -43,10 +39,6 @@ impl Quantization {
             Self::Q4_0 => "q4_0",
             Self::Q5_0 => "q5_0",
             Self::Q8_0 => "q8_0",
-            Self::Q4K => "q4k",
-            Self::Q5K => "q5k",
-            Self::Q6K => "q6k",
-            Self::Q8K => "q8k",
         }
     }
 
@@ -57,10 +49,6 @@ impl Quantization {
             Self::Q4_0 => GgmlDType::Q4_0,
             Self::Q5_0 => GgmlDType::Q5_0,
             Self::Q8_0 => GgmlDType::Q8_0,
-            Self::Q4K => GgmlDType::Q4K,
-            Self::Q5K => GgmlDType::Q5K,
-            Self::Q6K => GgmlDType::Q6K,
-            Self::Q8K => GgmlDType::Q8K,
         }
     }
 }
@@ -75,12 +63,8 @@ impl FromStr for Quantization {
             "q4_0" => Ok(Self::Q4_0),
             "q5_0" => Ok(Self::Q5_0),
             "q8_0" => Ok(Self::Q8_0),
-            "q4k" => Ok(Self::Q4K),
-            "q5k" => Ok(Self::Q5K),
-            "q6k" => Ok(Self::Q6K),
-            "q8k" => Ok(Self::Q8K),
             _ => {
-                bail!("Unknown quantization: {s}. Supported: f16, bf16, q4_0, q5_0, q8_0, q4k, q5k, q6k, q8k")
+                bail!("Unknown quantization: {s}. Supported: f16, bf16, q4_0, q5_0, q8_0")
             }
         }
     }
